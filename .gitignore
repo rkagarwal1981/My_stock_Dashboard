@@ -2,9 +2,11 @@ venv/
 __pycache__/
 .vscode/
 *.txt
+!requirements.txt
 *.csv
 *.xlsx
 *.json
 *.key
 *.db
+
 
