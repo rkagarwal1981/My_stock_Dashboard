@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+.vscode/
+*.txt
+*.csv
+*.xlsx
+*.json
+*.key
+*.db
+

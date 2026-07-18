@@ -1,0 +1,131 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --bg-primary: #0c0d14;
+  --bg-secondary: #161824;
+  --bg-tertiary: #1f2233;
+  --accent-blue: #2962ff;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-orange: #f59e0b;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --border-color: #2a2e43;
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --transition-speed: 0.25s;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Custom classes */
+.glass-panel {
+  background: rgba(22, 24, 36, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.text-green {
+  color: var(--accent-green) !important;
+}
+
+.text-red {
+  color: var(--accent-red) !important;
+}
+
+.text-orange {
+  color: var(--accent-orange) !important;
+}
+
+.pulse-animation {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: .5;
+  }
+}
+
+/* AG Grid custom overrides for dark theme */
+.ag-theme-alpine-dark, .ag-theme-material {
+  --ag-background-color: var(--bg-secondary) !important;
+  --ag-header-background-color: var(--bg-tertiary) !important;
+  --ag-odd-row-background-color: rgba(31, 34, 51, 0.3) !important;
+  --ag-border-color: var(--border-color) !important;
+  --ag-row-hover-color: rgba(254, 240, 138, 0.18) !important;
+  --ag-selected-row-background-color: rgba(41, 98, 255, 0.25) !important;
+  --ag-font-family: var(--font-family) !important;
+  --ag-font-size: 13px !important;
+  --ag-text-color: var(--text-primary) !important;
+  --ag-header-foreground-color: var(--text-secondary) !important;
+}
+
+.ag-row-hover .ag-cell {
+  background-color: transparent !important;
+}
+
+.ag-header-cell-label {
+  font-weight: 600 !important;
+}
+
+/* Animations */
+.fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+button, input, select {
+  font-family: inherit;
+}
+
+.grid-header-center .ag-header-cell-label {
+  justify-content: center !important;
+}
