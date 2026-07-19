@@ -344,30 +344,37 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
         db.commit()
         db.refresh(history)
         
+        # Load existing transaction identifiers for this broker from DB to avoid N+1 queries
+        existing_txs = db.query(Transaction).filter_by(broker=broker).all()
+        existing_keys = set()
+        for tx in existing_txs:
+            tx_date_str = tx.transaction_date.strftime("%Y-%m-%d") if tx.transaction_date else ""
+            key = (
+                tx.script.upper() if tx.script else "",
+                tx.buy_sell.upper() if tx.buy_sell else "",
+                float(tx.quantity) if tx.quantity else 0.0,
+                float(tx.price) if tx.price else 0.0,
+                tx_date_str,
+                str(tx.order_number) if tx.order_number else "",
+                str(tx.trade_id) if tx.trade_id else ""
+            )
+            existing_keys.add(key)
+
         # Save transactions to DB
         count = 0
         for tx_data in parsed_txs:
-            # Check if this exact transaction order/trade ID already exists to avoid duplicates
-            # (only if trade_id or order_number is available)
-            exists = False
-            if tx_data.get("order_number") or tx_data.get("trade_id"):
-                query = db.query(Transaction).filter_by(
-                    broker=tx_data["broker"],
-                    script=tx_data["script"],
-                    buy_sell=tx_data["buy_sell"],
-                    quantity=tx_data["quantity"],
-                    price=tx_data["price"],
-                    transaction_date=tx_data["transaction_date"]
-                )
-                if tx_data.get("order_number"):
-                    query = query.filter_by(order_number=tx_data["order_number"])
-                if tx_data.get("trade_id"):
-                    query = query.filter_by(trade_id=tx_data["trade_id"])
-                
-                if query.first():
-                    exists = True
-                    
-            if not exists:
+            tx_date_str = tx_data["transaction_date"].strftime("%Y-%m-%d") if tx_data["transaction_date"] else ""
+            key = (
+                tx_data["script"].upper() if tx_data["script"] else "",
+                tx_data["buy_sell"].upper() if tx_data["buy_sell"] else "",
+                float(tx_data["quantity"]) if tx_data["quantity"] else 0.0,
+                float(tx_data["price"]) if tx_data["price"] else 0.0,
+                tx_date_str,
+                str(tx_data.get("order_number") or "") if tx_data.get("order_number") else "",
+                str(tx_data.get("trade_id") or "") if tx_data.get("trade_id") else ""
+            )
+            
+            if key not in existing_keys:
                 db_tx = Transaction(
                     transaction_date=tx_data["transaction_date"],
                     broker=tx_data["broker"],
@@ -384,6 +391,7 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
                 )
                 db.add(db_tx)
                 count += 1
+                existing_keys.add(key)
                 
         db.commit()
         

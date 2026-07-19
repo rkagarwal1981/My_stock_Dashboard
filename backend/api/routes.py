@@ -299,9 +299,12 @@ def export_holdings(
 ):
     holdings = db.query(Holding).all()
     
-    # If no holdings in table, calculate them dynamically from transactions
-    if not holdings:
-        txs = db.query(Transaction).all()
+    existing_brokers = set(h.broker for h in holdings)
+    all_tx_brokers = set(tx[0] for tx in db.query(Transaction.broker).distinct().all())
+    missing_brokers = all_tx_brokers - existing_brokers
+    
+    if missing_brokers:
+        txs = db.query(Transaction).filter(Transaction.broker.in_(missing_brokers)).all()
         settlement = compute_lifo_settlement(txs)
         
         holdings_dict = {}
@@ -403,13 +406,14 @@ def export_holdings(
 def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     holdings = db.query(Holding).all()
     
-    # If no holdings in table, calculate them dynamically from transactions
-    if not holdings:
-        txs = db.query(Transaction).all()
-        # compute holdings based on settled/unsettled transactions
+    existing_brokers = set(h.broker for h in holdings)
+    all_tx_brokers = set(tx[0] for tx in db.query(Transaction.broker).distinct().all())
+    missing_brokers = all_tx_brokers - existing_brokers
+    
+    if missing_brokers:
+        txs = db.query(Transaction).filter(Transaction.broker.in_(missing_brokers)).all()
         settlement = compute_lifo_settlement(txs)
         
-        # Unsettled buys represent current holding
         holdings_dict = {}
         for row in settlement:
             if row["comment"] == "Unsettled" and row["buy_date"] is not None:
@@ -419,7 +423,6 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
                 holdings_dict[key]["qty"] += row["qty"]
                 holdings_dict[key]["total_cost"] += row["qty"] * row["price"]
                 
-        # Save holding positions to holdings table
         for (broker, scrip), data in holdings_dict.items():
             if data["qty"] > 0:
                 avg_price = data["total_cost"] / data["qty"]
@@ -428,7 +431,7 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
                     script=scrip,
                     quantity=data["qty"],
                     avg_price=avg_price,
-                    ltp=avg_price,  # default
+                    ltp=avg_price,
                     current_value=data["qty"] * avg_price,
                     pnl=0.0
                 )
