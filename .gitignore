@@ -13,6 +13,7 @@ __pycache__/
 !frontend/tsconfig.node.json
 !frontend/.oxlintrc.json
 !frontend/vite.config.ts
+!frontend/vercel.json
 *.key
 *.db
 
