@@ -91,7 +91,7 @@ class MStockClient:
         if not all([self.username, self.password, self.api_key, self.totp_key]):
             raise ValueError("Incomplete MStock credentials in mstock_credentials.txt")
             
-        mconnect = MConnect()
+        mconnect = MConnect(timeout=30)
         
         # Step 1: Login with username/password
         print(f"[MStock API] Logging in for user: {self.username}...")

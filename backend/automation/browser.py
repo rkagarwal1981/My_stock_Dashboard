@@ -386,7 +386,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
             import pyotp
             
             print(f"Attempting MStock API connection for {username}...")
-            mconnect = MConnect()
+            mconnect = MConnect(timeout=30)
             
             # Step 1: Login (triggers OTP)
             login_resp = mconnect.login(username, password_decrypted)

@@ -160,7 +160,7 @@ def run_api_flow(creds: Dict[str, str]) -> bool:
     try:
         from tradingapi_a.mconnect import MConnect
         print("\n[MStock API] Connecting...")
-        mconnect = MConnect()
+        mconnect = MConnect(timeout=30)
         
         login_resp = mconnect.login(username, password)
         totp_code = pyotp.TOTP(totp_key.strip()).now()

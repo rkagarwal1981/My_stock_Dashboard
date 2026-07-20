@@ -116,7 +116,16 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
             # Navigate to Console reports > Tradebook directly
             print("[Zerodha Console] Navigating to Tradebook...")
             page.goto("https://console.zerodha.com/reports/tradebook", timeout=45000)
-            time.sleep(5) # Let initial load and redirects settle
+            
+            # Let initial load and redirects settle
+            for _ in range(15):
+                if "kite.zerodha.com" in page.url or "login" in page.url or "twofa" in page.url:
+                    break
+                if page.locator("a:has-text('Login with Kite'), button:has-text('Login with Kite')").first.is_visible():
+                    break
+                if page.locator("select[id='segment'], select[name='segment']").first.is_visible():
+                    break
+                time.sleep(1)
             
             # Check if we were redirected to Kite login/2FA screen
             is_login = "kite.zerodha.com" in page.url or "login" in page.url or "twofa" in page.url

@@ -128,7 +128,7 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
     try:
         from tradingapi_a.mconnect import MConnect
         print("\n=== Connecting via MStock API ===")
-        mconnect = MConnect()
+        mconnect = MConnect(timeout=30)
         
         print(f"Logging in user {username}...")
         login_resp = mconnect.login(username, password)
