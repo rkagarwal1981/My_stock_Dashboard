@@ -154,7 +154,7 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
             print(f"verify_totp failed ({e}). Falling back to generate_session...")
             mconnect.generate_session(api_key, totp_code, "W")
             
-        print("Fetching holdings from API...")
+        print("Fetching holdings directly from mStock Portfolio API...")
         holdings_resp = mconnect.get_holdings()
         print("Raw Holdings response:")
         
@@ -170,53 +170,15 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
             print(holdings_resp)
             raw_holdings = holdings_resp
             
-        print("Fetching net positions from API...")
-        pos_resp = mconnect.get_net_position()
-        print("Raw Net Position response:")
-        
-        raw_positions = []
-        if hasattr(pos_resp, "json"):
-            resp_json = pos_resp.json()
-            print(json.dumps(resp_json, indent=2))
-            if isinstance(resp_json, dict):
-                p_data = resp_json.get("data")
-                if isinstance(p_data, dict) and "net" in p_data:
-                    raw_positions = p_data["net"]
-                elif isinstance(p_data, list):
-                    raw_positions = p_data
-            elif isinstance(resp_json, list):
-                raw_positions = resp_json
-        else:
-            print(pos_resp)
-            raw_positions = pos_resp
-            
-        # Ensure they are list types to prevent concatenation error
         if not isinstance(raw_holdings, list):
             raw_holdings = []
-        if not isinstance(raw_positions, list):
-            raw_positions = []
             
-        # Combine and parse
         holdings = []
-        seen = {}
-        for item in raw_holdings + raw_positions:
+        for item in raw_holdings:
             h = parse_generic_holding(item)
             if h and h["Quantity"] > 0:
-                scrip = h["Scrip"]
-                if scrip not in seen:
-                    seen[scrip] = h
-                else:
-                    old_h = seen[scrip]
-                    total_qty = old_h["Quantity"] + h["Quantity"]
-                    if total_qty > 0:
-                        total_cost = (old_h["Quantity"] * old_h["Avg Price"]) + (h["Quantity"] * h["Avg Price"])
-                        old_h["Avg Price"] = total_cost / total_qty
-                        old_h["Quantity"] = total_qty
-                        old_h["LTP"] = max(old_h["LTP"], h["LTP"])
-                        old_h["Current Value"] = total_qty * old_h["LTP"]
-                        old_h["P&L"] = old_h["Current Value"] - total_cost
-                        
-        holdings = list(seen.values())
+                holdings.append(h)
+                
         return holdings
     except Exception as e:
         print(f"[MStock API Error] {e}")

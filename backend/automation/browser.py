@@ -412,7 +412,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                 # Fallback to standard generate_session
                 mconnect.generate_session(api_key, otp_code, "W")
                 
-            # Step 4: Retrieve Holdings and Net Positions
+            # Step 4: Retrieve Holdings directly from mStock Portfolio API
             data = []
             try:
                 holdings_resp = mconnect.get_holdings()
@@ -422,6 +422,10 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                         h_data = resp_json.get("data")
                         if isinstance(h_data, list):
                             data.extend(h_data)
+                        elif isinstance(h_data, dict):
+                            data.extend(h_data.get("holdings") or h_data.get("portfolio") or [])
+                        else:
+                            data.extend(resp_json.get("holdings") or resp_json.get("portfolio") or [])
                     elif isinstance(resp_json, list):
                         data.extend(resp_json)
                 elif isinstance(holdings_resp, list):
@@ -429,40 +433,12 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
             except Exception as eh:
                 print(f"Error fetching MStock holdings: {eh}")
 
-            try:
-                pos_resp = mconnect.get_net_position()
-                if hasattr(pos_resp, "json"):
-                    pos_json = pos_resp.json()
-                    if isinstance(pos_json, dict):
-                        p_data = pos_json.get("data")
-                        if isinstance(p_data, dict) and "net" in p_data:
-                            data.extend(p_data["net"])
-                        elif isinstance(p_data, list):
-                            data.extend(p_data)
-                elif isinstance(pos_resp, list):
-                    data.extend(pos_resp)
-            except Exception as ep:
-                print(f"Error fetching MStock net positions: {ep}")
-
-            seen = {}
+            holdings = []
             for item in data:
                 h = parse_generic_holding(item, "MStock")
                 if h and h["quantity"] > 0:
-                    script = h["script"]
-                    if script not in seen:
-                        seen[script] = h
-                    else:
-                        old_h = seen[script]
-                        total_qty = old_h["quantity"] + h["quantity"]
-                        if total_qty > 0:
-                            total_cost = (old_h["quantity"] * old_h["avg_price"]) + (h["quantity"] * h["avg_price"])
-                            old_h["avg_price"] = total_cost / total_qty
-                            old_h["quantity"] = total_qty
-                            old_h["ltp"] = max(old_h["ltp"], h["ltp"])
-                            old_h["current_value"] = total_qty * old_h["ltp"]
-                            old_h["pnl"] = old_h["current_value"] - total_cost
+                    holdings.append(h)
 
-            holdings = list(seen.values())
             if holdings:
                 automation_states["mstock"]["status"] = "SUCCESS"
                 return holdings

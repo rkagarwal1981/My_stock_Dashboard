@@ -154,6 +154,8 @@ class MStockClient:
                     scrip = f"{scrip}-EQ"
                     
                 qty = float(item.get("quantity") or item.get("qty") or item.get("total_qty") or 0.0)
+                if qty <= 0:
+                    continue
                 avg_price = float(item.get("avg_price") or item.get("averagePrice") or item.get("average_price") or item.get("avgPrice") or item.get("buy_price") or 0.0)
                 ltp = float(item.get("ltp") or item.get("lastPrice") or item.get("last_price") or avg_price)
                 

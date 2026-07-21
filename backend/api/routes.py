@@ -299,38 +299,7 @@ def export_holdings(
 ):
     holdings = db.query(Holding).all()
     
-    existing_brokers = set(h.broker for h in holdings)
-    all_tx_brokers = set(tx[0] for tx in db.query(Transaction.broker).distinct().all())
-    missing_brokers = all_tx_brokers - existing_brokers
-    
-    if missing_brokers:
-        txs = db.query(Transaction).filter(Transaction.broker.in_(missing_brokers)).all()
-        settlement = compute_lifo_settlement(txs)
-        
-        holdings_dict = {}
-        for row in settlement:
-            if row["comment"] == "Unsettled" and row["buy_date"] is not None:
-                key = (row["broker"], row["scrip"])
-                if key not in holdings_dict:
-                    holdings_dict[key] = {"qty": 0.0, "total_cost": 0.0}
-                holdings_dict[key]["qty"] += row["qty"]
-                holdings_dict[key]["total_cost"] += row["qty"] * row["price"]
-                
-        for (broker, scrip), data in holdings_dict.items():
-            if data["qty"] > 0:
-                avg_price = data["total_cost"] / data["qty"]
-                h = Holding(
-                    broker=broker,
-                    script=scrip,
-                    quantity=data["qty"],
-                    avg_price=avg_price,
-                    ltp=avg_price,
-                    current_value=data["qty"] * avg_price,
-                    pnl=0.0
-                )
-                db.add(h)
-        db.commit()
-        holdings = db.query(Holding).all()
+    holdings = db.query(Holding).all()
 
     # Format data for export
     export_data = []
@@ -406,38 +375,7 @@ def export_holdings(
 def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     holdings = db.query(Holding).all()
     
-    existing_brokers = set(h.broker for h in holdings)
-    all_tx_brokers = set(tx[0] for tx in db.query(Transaction.broker).distinct().all())
-    missing_brokers = all_tx_brokers - existing_brokers
-    
-    if missing_brokers:
-        txs = db.query(Transaction).filter(Transaction.broker.in_(missing_brokers)).all()
-        settlement = compute_lifo_settlement(txs)
-        
-        holdings_dict = {}
-        for row in settlement:
-            if row["comment"] == "Unsettled" and row["buy_date"] is not None:
-                key = (row["broker"], row["scrip"])
-                if key not in holdings_dict:
-                    holdings_dict[key] = {"qty": 0.0, "total_cost": 0.0}
-                holdings_dict[key]["qty"] += row["qty"]
-                holdings_dict[key]["total_cost"] += row["qty"] * row["price"]
-                
-        for (broker, scrip), data in holdings_dict.items():
-            if data["qty"] > 0:
-                avg_price = data["total_cost"] / data["qty"]
-                h = Holding(
-                    broker=broker,
-                    script=scrip,
-                    quantity=data["qty"],
-                    avg_price=avg_price,
-                    ltp=avg_price,
-                    current_value=data["qty"] * avg_price,
-                    pnl=0.0
-                )
-                db.add(h)
-        db.commit()
-        holdings = db.query(Holding).all()
+    holdings = db.query(Holding).all()
         
     live_prices = {}
     if refresh_prices and holdings:
