@@ -23,6 +23,7 @@ from models.executed_order import ExecutedOrder
 from models.target import TargetSetting
 from models.target_category import TargetCategory
 from models.sector_override import SectorAllocationOverride
+from models.watchlist import WatchlistAction, WatchlistManualScript
 from services.mutual_fund_engine import MutualFundEngine
 
 from api.auth import (
@@ -582,7 +583,9 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
             "settlement_history": [],
             "xirr": 0.0,
             "current_pe": current_pe,
-            "avg_pe_3y": avg_pe_3y
+            "avg_pe_3y": avg_pe_3y,
+            "highlight_date": None,
+            "action_checked": False
         }
         
     settlement = compute_lifo_settlement(txs)
@@ -694,10 +697,35 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
     xirr_val = calculate_xirr(cash_flows) * 100.0
     xirr_val = clean_val(xirr_val) or 0.0
 
+    # Calculate highlight date for most recent open buy transaction picked for LIFO Section 1
+    highlight_date = None
+    if txs:
+        open_buys = [r for r in settlement if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None]
+        if open_buys:
+            most_recent_open_buy = max(open_buys, key=lambda x: x["buy_date"])
+            highlight_date = most_recent_open_buy["buy_date"].isoformat() if most_recent_open_buy["buy_date"] else None
+
+    # Check action checked (expires in 24 hours)
+    action_record = db.query(WatchlistAction).filter(
+        WatchlistAction.script == scrip,
+        WatchlistAction.section == 'section1'
+    ).first()
+    
+    action_checked = False
+    if action_record:
+        time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+        if time_diff.total_seconds() < 24 * 60 * 60:
+            action_checked = True
+        else:
+            db.delete(action_record)
+            db.commit()
+
     return {
         "scrip": scrip,
         "current_quantity": clean_val(total_qty) or 0.0,
         "avg_price": clean_val(avg_price) or 0.0,
+        "highlight_date": highlight_date,
+        "action_checked": action_checked,
         "current_value": clean_val(current_value) or 0.0,
         "ltp": clean_val(ltp) or 0.0,
         "unrealized_pnl": clean_val(unrealized_pnl) or 0.0,
@@ -1141,6 +1169,85 @@ def get_mutual_funds_analytics(
                     mv["pct_nav"] = safe_float(mv["pct_nav"])
                     
         return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class MutualFundsExportRequest(BaseModel):
+    rows: Optional[List[dict]] = None
+    fund_code: Optional[str] = "ALL"
+    filter: Optional[str] = "ALL"
+    format: Optional[str] = "excel"
+
+@router.post("/mutual-funds/export")
+@router.get("/mutual-funds/export")
+def export_mutual_funds(
+    req: Optional[MutualFundsExportRequest] = None,
+    fund_code: Optional[str] = None,
+    format: str = "excel",
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        months = mf_engine.get_available_months()
+        
+        rows_data = None
+        export_format = format
+        target_fund_code = fund_code
+
+        if req:
+            if req.rows is not None:
+                rows_data = req.rows
+            if req.format:
+                export_format = req.format
+            if req.fund_code:
+                target_fund_code = req.fund_code
+
+        if rows_data is None:
+            rows_data = mf_engine.compute_analytics(target_fund_code)
+
+        export_data = []
+        for a in rows_data:
+            m_vals = a.get("month_values", {})
+            mf_name = a.get("mutual_fund")
+
+            row = {
+                "Portfolio Signal": a.get("portfolio_signal"),
+                "Mutual Fund": mf_name or "",
+                "Symbol": a.get("symbol") or "",
+                "Stock Name": a.get("stock_name") or "",
+                "Industry": a.get("industry") or "",
+                "Status": a.get("status") or "",
+            }
+
+            for m in months:
+                mv = m_vals.get(m, {}) if isinstance(m_vals, dict) else {}
+                val = mv.get("value_crore", 0.0) if isinstance(mv, dict) else 0.0
+                row[m] = round(val, 2) if val else 0.0
+
+            row["1M Change (Cr)"] = round(a.get("change_1m_crore", 0.0), 2)
+            row["1M Change (%)"] = round(a.get("change_1m_pct", 0.0), 2)
+            row["2M Change (Cr)"] = round(a.get("change_2m_crore", 0.0), 2)
+            row["2M Change (%)"] = round(a.get("change_2m_pct", 0.0), 2)
+            row["3M Change (Cr)"] = round(a.get("change_3m_crore", 0.0), 2)
+            row["3M Change (%)"] = round(a.get("change_3m_pct", 0.0), 2)
+
+            export_data.append(row)
+
+        df = pd.DataFrame(export_data)
+
+        if (export_format or "excel").lower() == "csv":
+            stream = io.StringIO()
+            df.to_csv(stream, index=False)
+            response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+            response.headers["Content-Disposition"] = "attachment; filename=Mutual_Funds_Holdings_Filtered.csv"
+            return response
+        else:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Mutual_Funds_Holdings', index=False)
+            output.seek(0)
+            response = StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            response.headers["Content-Disposition"] = "attachment; filename=Mutual_Funds_Holdings_Filtered.xlsx"
+            return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1593,12 +1700,15 @@ def analytics_churn(
     Returns binned holding_days frequencies from LIFO-settled closed positions.
     [{bin_label: str, count: int, min_days: int, max_days: int}]
     """
-    query = db.query(Transaction)
-    if broker and broker.lower() != "all":
-        query = query.filter(Transaction.broker.ilike(broker))
-    txs = query.all()
-
-    settlement = compute_lifo_settlement(txs)
+    bins = [
+        ("0-7d",   0,    7),
+        ("8-15d",  8,   15),
+        ("16-30d", 16,  30),
+        ("1m",     31,  60),
+        ("2m",     61,  90),
+        ("3m",     91, 120),
+        (">4mnth", 121, 99999),
+    ]
 
     dt_from = None
     dt_to = None
@@ -1613,6 +1723,48 @@ def analytics_churn(
         except Exception:
             pass
 
+    # 1. Fetch only the unique scripts that have SELL transactions in the date range [dt_from, dt_to] and broker
+    sell_query = db.query(Transaction.script).filter(Transaction.buy_sell == "SELL")
+    if broker and broker.lower() != "all":
+        sell_query = sell_query.filter(Transaction.broker.ilike(broker))
+    if dt_from:
+        sell_query = sell_query.filter(Transaction.transaction_date >= dt_from)
+    if dt_to:
+        sell_query = sell_query.filter(Transaction.transaction_date <= dt_to)
+
+    scripts = [r[0] for r in sell_query.distinct().all()]
+
+    if not scripts:
+        return {
+            "bins": [{"bin_label": label, "count": 0, "min_days": lo, "max_days": hi if hi < 99999 else None} for label, lo, hi in bins],
+            "total": 0
+        }
+
+    # 2. Fetch all transactions for these scripts up to dt_to, using with_entities to avoid ORM instantiation overhead
+    query = db.query(Transaction).filter(Transaction.script.in_(scripts))
+    if broker and broker.lower() != "all":
+        query = query.filter(Transaction.broker.ilike(broker))
+    if dt_to:
+        query = query.filter(Transaction.transaction_date <= dt_to)
+    
+    txs = query.with_entities(
+        Transaction.id,
+        Transaction.script,
+        Transaction.broker,
+        Transaction.transaction_date,
+        Transaction.buy_sell,
+        Transaction.quantity,
+        Transaction.price,
+        Transaction.charges,
+        Transaction.net_amount,
+        Transaction.order_number,
+        Transaction.exchange
+    ).all()
+
+    # 3. Compute LIFO settlement for these transactions
+    settlement = compute_lifo_settlement(txs)
+
+    # 4. Filter settlement rows to match the sell date range
     holding_days_list = []
     for row in settlement:
         if row.get("holding_days") is None:
@@ -1627,15 +1779,6 @@ def analytics_churn(
                 continue
         holding_days_list.append(int(row["holding_days"]))
 
-    bins = [
-        ("0-7d",   0,    7),
-        ("8-15d",  8,   15),
-        ("16-30d", 16,  30),
-        ("1m",     31,  60),
-        ("2m",     61,  90),
-        ("3m",     91, 120),
-        (">4mnth", 121, 99999),
-    ]
     result = []
     for label, lo, hi in bins:
         count = sum(1 for d in holding_days_list if lo <= d <= hi)
@@ -1981,3 +2124,390 @@ def analytics_volatility(
         "data_months": len(port_returns),
         "sufficient_data": sufficient
     }
+
+
+# --- Watchlist Feature Module Endpoints ---
+
+class WatchlistActionToggleRequest(BaseModel):
+    script: str
+    section: str
+    checked: bool
+
+class WatchlistManualAddRequest(BaseModel):
+    script: str
+
+@router.post("/watchlist/action")
+def toggle_watchlist_action(
+    req: WatchlistActionToggleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(WatchlistAction).filter(
+        WatchlistAction.script == req.script,
+        WatchlistAction.section == req.section
+    ).first()
+    
+    if req.checked:
+        if existing:
+            existing.checked_at = datetime.now()
+        else:
+            action = WatchlistAction(
+                script=req.script,
+                section=req.section,
+                checked_at=datetime.now()
+            )
+            db.add(action)
+    else:
+        if existing:
+            db.delete(existing)
+    
+    db.commit()
+    return {"success": True, "checked": req.checked}
+
+@router.post("/watchlist/manual")
+def add_watchlist_manual(
+    req: WatchlistManualAddRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(WatchlistManualScript).filter(
+        WatchlistManualScript.script == req.script
+    ).first()
+    
+    if not existing:
+        manual = WatchlistManualScript(
+            script=req.script,
+            tag_type="MANUAL",
+            created_at=datetime.now()
+        )
+        db.add(manual)
+        db.commit()
+        
+        audit = AuditLog(
+            category="WATCHLIST",
+            description=f"Script {req.script} manually moved to Watchlist."
+        )
+        db.add(audit)
+        db.commit()
+        
+    return {"success": True, "script": req.script}
+
+@router.delete("/watchlist/manual/{script}")
+def delete_watchlist_manual(
+    script: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(WatchlistManualScript).filter(
+        WatchlistManualScript.script == script
+    ).first()
+    
+    if existing:
+        db.delete(existing)
+        db.commit()
+        
+        audit = AuditLog(
+            category="WATCHLIST",
+            description=f"Script {script} removed from manual Watchlist."
+        )
+        db.add(audit)
+        db.commit()
+        
+        return {"success": True, "deleted": True}
+    return {"success": True, "deleted": False}
+
+@router.get("/watchlist/section1")
+def get_watchlist_section1(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    holdings = db.query(Holding).all()
+    if not holdings:
+        return []
+        
+    manual_scripts = {m.script for m in db.query(WatchlistManualScript).all()}
+    
+    scrips = [h.script for h in holdings]
+    live_prices = {}
+    try:
+        live_prices = fetch_live_prices(scrips)
+    except Exception as e:
+        print(f"Error fetching live prices for section1 watchlist: {e}")
+        
+    results = []
+    for h in holdings:
+        script = h.script
+        is_manual = script in manual_scripts
+        
+        ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
+        if ltp is None or ltp == 0:
+            ltp = h.avg_price
+            
+        # Get all transactions for script
+        txs = db.query(Transaction).filter(Transaction.script == script).all()
+        
+        open_buys = []
+        if txs:
+            settlement = compute_lifo_settlement(txs)
+            open_buys = [r for r in settlement if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None]
+            
+        if not open_buys:
+            if not is_manual:
+                # Skip if no open buys exist and it's not manually watchlisted
+                continue
+            # Fallback for manually added scripts with no open buys or no transactions
+            buying_date = None
+            buying_price = h.avg_price
+            remaining_qty = h.quantity
+            is_partial = False
+        else:
+            # Pick the most recent open buy transaction (maximum buy_date)
+            most_recent_open_buy = max(open_buys, key=lambda x: x["buy_date"])
+            buying_date = most_recent_open_buy["buy_date"]
+            buying_price = most_recent_open_buy["price"]
+            remaining_qty = most_recent_open_buy["qty"]
+            
+            # Find the original grouped lot quantity for this open buy to check if it's partially settled
+            orig_lot_qty = sum(
+                t.quantity for t in txs 
+                if t.buy_sell.upper() == 'BUY' 
+                and t.transaction_date.date() == buying_date.date() 
+                and abs(t.price - buying_price) < 0.01
+            )
+                    
+            is_partial = False
+            if orig_lot_qty > 0 and remaining_qty < orig_lot_qty:
+                is_partial = True
+
+        gain = 0.0
+        if buying_price and buying_price > 0:
+            gain = ((ltp - buying_price) / buying_price) * 100.0
+            
+        if gain >= 4.0 or is_manual:
+            value = remaining_qty * ltp
+            potential_profit = remaining_qty * (ltp - buying_price) if buying_price else 0.0
+            
+            action_record = db.query(WatchlistAction).filter(
+                WatchlistAction.script == script,
+                WatchlistAction.section == 'section1'
+            ).first()
+            
+            action_checked = False
+            if action_record:
+                time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+                if time_diff.total_seconds() < 24 * 60 * 60:
+                    action_checked = True
+                else:
+                    db.delete(action_record)
+                    db.commit()
+                    
+            results.append({
+                "buying_date": buying_date,
+                "script": script,
+                "buying_price": buying_price,
+                "ltp": ltp,
+                "gain_pct": gain,
+                "quantity": remaining_qty,
+                "value": value,
+                "potential_profit": potential_profit,
+                "action_checked": action_checked,
+                "tag_type": "MANUAL" if is_manual else "AUTOMATED",
+                "is_partial": is_partial
+            })
+            
+    return results
+
+@router.get("/watchlist/section2")
+def get_watchlist_section2(
+    N: int = 5,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    holdings = db.query(Holding).all()
+    if not holdings:
+        return {"top_movers": [], "bottom_movers": []}
+        
+    scrips = [h.script for h in holdings]
+    live_prices = {}
+    try:
+        live_prices = fetch_live_prices(scrips)
+    except Exception as e:
+        print(f"Error fetching live prices for section2 watchlist: {e}")
+        
+    movers = []
+    for h in holdings:
+        script = h.script
+        ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
+        change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
+        
+        latest_tx = db.query(Transaction).filter(
+            Transaction.script == h.script,
+            Transaction.broker == h.broker
+        ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).first()
+
+        dip_pct = None
+        latest_tx_date = None
+        latest_tx_days = None
+        latest_tx_type = None
+
+        if latest_tx:
+            tx_price = latest_tx.price
+            if tx_price and tx_price > 0 and ltp is not None:
+                dip_pct = ((ltp - tx_price) / tx_price) * 100
+            
+            latest_tx_date = latest_tx.transaction_date
+            if latest_tx_date:
+                today = datetime.now().date()
+                tx_date = latest_tx_date.date()
+                latest_tx_days = (today - tx_date).days
+            
+            latest_tx_type = "Buy" if latest_tx.buy_sell.upper() == "BUY" else "Sell"
+
+        cost = h.quantity * h.avg_price
+        pnl_val = (ltp * h.quantity) - cost
+        pnl_pct = (pnl_val / cost) * 100 if cost else 0.0
+        
+        action_record = db.query(WatchlistAction).filter(
+            WatchlistAction.script == script,
+            WatchlistAction.section == 'section2'
+        ).first()
+        
+        action_checked = False
+        if action_record:
+            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+            if time_diff.total_seconds() < 24 * 60 * 60:
+                action_checked = True
+            else:
+                db.delete(action_record)
+                db.commit()
+                
+        movers.append({
+            "id": h.id,
+            "broker": h.broker,
+            "script": script,
+            "quantity": h.quantity,
+            "avg_price": h.avg_price,
+            "ltp": ltp,
+            "current_value": h.quantity * ltp,
+            "pnl": pnl_val,
+            "pnl_pct": pnl_pct,
+            "change_in_ltp_pct": change_pct,
+            "dip_pct": dip_pct,
+            "latest_tx_date": latest_tx_date,
+            "latest_tx_days": latest_tx_days,
+            "latest_tx_type": latest_tx_type,
+            "action_checked": action_checked,
+            "last_updated": h.last_updated
+        })
+        
+    pos_movers = [m for m in movers if m["change_in_ltp_pct"] > 0]
+    pos_movers.sort(key=lambda x: x["change_in_ltp_pct"], reverse=True)
+    
+    neg_movers = [m for m in movers if m["change_in_ltp_pct"] < 0]
+    neg_movers.sort(key=lambda x: x["change_in_ltp_pct"])
+    
+    top_n = pos_movers[:N]
+    bottom_n = neg_movers[:N]
+    
+    return {
+        "top_movers": top_n,
+        "bottom_movers": bottom_n
+    }
+
+@router.get("/watchlist/section3")
+def get_watchlist_section3(
+    N: int = 5,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    holdings = db.query(Holding).all()
+    if not holdings:
+        return {"top_movers": [], "bottom_movers": []}
+        
+    scrips = [h.script for h in holdings]
+    live_prices = {}
+    try:
+        live_prices = fetch_live_prices(scrips)
+    except Exception as e:
+        print(f"Error fetching live prices for section3 watchlist: {e}")
+        
+    movers = []
+    for h in holdings:
+        script = h.script
+        ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
+        change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
+        
+        latest_tx = db.query(Transaction).filter(
+            Transaction.script == h.script,
+            Transaction.broker == h.broker
+        ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).first()
+
+        dip_pct = None
+        latest_tx_date = None
+        latest_tx_days = None
+        latest_tx_type = None
+
+        if latest_tx:
+            tx_price = latest_tx.price
+            if tx_price and tx_price > 0 and ltp is not None:
+                dip_pct = ((ltp - tx_price) / tx_price) * 100
+            
+            latest_tx_date = latest_tx.transaction_date
+            if latest_tx_date:
+                today = datetime.now().date()
+                tx_date = latest_tx_date.date()
+                latest_tx_days = (today - tx_date).days
+            
+            latest_tx_type = "Buy" if latest_tx.buy_sell.upper() == "BUY" else "Sell"
+
+        if dip_pct is None:
+            continue
+
+        cost = h.quantity * h.avg_price
+        pnl_val = (ltp * h.quantity) - cost
+        pnl_pct = (pnl_val / cost) * 100 if cost else 0.0
+        
+        action_record = db.query(WatchlistAction).filter(
+            WatchlistAction.script == script,
+            WatchlistAction.section == 'section3'
+        ).first()
+        
+        action_checked = False
+        if action_record:
+            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+            if time_diff.total_seconds() < 24 * 60 * 60:
+                action_checked = True
+            else:
+                db.delete(action_record)
+                db.commit()
+                
+        movers.append({
+            "id": h.id,
+            "broker": h.broker,
+            "script": script,
+            "quantity": h.quantity,
+            "avg_price": h.avg_price,
+            "ltp": ltp,
+            "current_value": h.quantity * ltp,
+            "pnl": pnl_val,
+            "pnl_pct": pnl_pct,
+            "change_in_ltp_pct": change_pct,
+            "dip_pct": dip_pct,
+            "latest_tx_date": latest_tx_date,
+            "latest_tx_days": latest_tx_days,
+            "latest_tx_type": latest_tx_type,
+            "action_checked": action_checked,
+            "last_updated": h.last_updated
+        })
+        
+    pos_movers = sorted(movers, key=lambda x: x["dip_pct"], reverse=True)
+    neg_movers = sorted(movers, key=lambda x: x["dip_pct"])
+    
+    top_n = pos_movers[:N]
+    bottom_n = neg_movers[:N]
+    
+    return {
+        "top_movers": top_n,
+        "bottom_movers": bottom_n
+    }
+

@@ -10,6 +10,8 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import SearchIcon from '@mui/icons-material/Search';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import DownloadIcon from '@mui/icons-material/Download';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import RemoveIcon from '@mui/icons-material/Remove';
@@ -110,6 +112,40 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   // Target modal state
   const [targetModalOpen, setTargetModalOpen] = useState<boolean>(false);
   const [targetModalScript, setTargetModalScript] = useState<string>('');
+
+  // TradingView Watchlist string copy state
+  const [copiedAlert, setCopiedAlert] = useState<boolean>(false);
+
+  // Export state
+  const [exporting, setExporting] = useState<boolean>(false);
+
+  const handleExportExcel = async () => {
+    try {
+      setExporting(true);
+      const response = await axios.post(
+        '/api/mutual-funds/export',
+        {
+          rows: filteredRows,
+          fund_code: selectedFund,
+          filter: selectedFilter,
+          format: 'excel'
+        },
+        { responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const fileSuffix = selectedFilter !== 'ALL' ? selectedFilter : selectedFund;
+      link.setAttribute('download', `Mutual_Funds_Holdings_${fileSuffix}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      console.error('Export error:', err);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Load Mutual Fund summary and analytics
   const loadData = async () => {
@@ -279,6 +315,30 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
 
     return rows;
   }, [analytics, selectedFilter, searchText, months, summary]);
+
+  // Reactive tradingview watchlist string generated from active filtered rows state
+  const tradingViewWatchlistString = useMemo(() => {
+    if (!filteredRows || filteredRows.length === 0) return '';
+    const rawSymbols = filteredRows.map((r: any) => {
+      let sym = r.symbol || r.stock_name || '';
+      sym = sym.trim();
+      if (sym.endsWith('-EQ')) {
+        sym = sym.slice(0, -3).trim();
+      }
+      return sym.toUpperCase();
+    }).filter(Boolean);
+
+    // Deduplicate maintaining order
+    const uniqueSymbols = Array.from(new Set(rawSymbols));
+    return uniqueSymbols.join(', ');
+  }, [filteredRows]);
+
+  const handleCopyWatchlist = () => {
+    if (!tradingViewWatchlistString) return;
+    navigator.clipboard.writeText(tradingViewWatchlistString);
+    setCopiedAlert(true);
+    setTimeout(() => setCopiedAlert(false), 2500);
+  };
 
   // KPI Calculations (based on latestMonth)
   const kpis = useMemo(() => {
@@ -693,6 +753,17 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
               })}
             </Select>
           </FormControl>
+
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportExcel}
+            disabled={exporting}
+            sx={{ borderRadius: 2, px: 2, height: 40, whiteSpace: 'nowrap', fontWeight: 600 }}
+          >
+            {exporting ? 'Exporting...' : 'Export Excel'}
+          </Button>
         </Box>
       </Box>
 
@@ -782,6 +853,61 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
             animateRows={true}
           />
         </div>
+      </Card>
+
+      {/* TradingView Watchlist Extraction Tool */}
+      <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2, p: 3, mb: 3 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1 }}>
+            TradingView Watchlist String:
+          </Typography>
+          {copiedAlert && (
+            <Chip 
+              label="Copied to Clipboard!" 
+              size="small" 
+              sx={{ bgcolor: 'rgba(16,185,129,0.15)', color: '#10b981', fontWeight: 700, fontSize: 12 }} 
+            />
+          )}
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+          <TextField
+            fullWidth
+            size="small"
+            value={tradingViewWatchlistString}
+            slotProps={{
+              input: {
+                readOnly: true,
+                sx: { 
+                  fontFamily: 'monospace', 
+                  fontSize: 13, 
+                  color: '#e2e8f0',
+                  bgcolor: 'rgba(15, 23, 42, 0.6)'
+                }
+              }
+            }}
+            placeholder="No stocks visible in current view..."
+            sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+          />
+          <MuiTooltip title="Copy string for TradingView watchlist import">
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={handleCopyWatchlist}
+              disabled={!tradingViewWatchlistString}
+              startIcon={<ContentCopyIcon />}
+              sx={{ 
+                borderRadius: 2, 
+                px: 2.5, 
+                py: 1, 
+                whiteSpace: 'nowrap', 
+                textTransform: 'none',
+                fontWeight: 700 
+              }}
+            >
+              {copiedAlert ? 'Copied!' : 'Copy'}
+            </Button>
+          </MuiTooltip>
+        </Box>
       </Card>
 
       {/* Stock Detail Drawer */}
@@ -927,6 +1053,8 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
                 </>
               )}
             </Box>
+          </Box>
+        )}
       </Drawer>
 
       {/* Add Target Modal */}
