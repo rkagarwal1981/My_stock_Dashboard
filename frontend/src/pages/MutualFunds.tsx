@@ -19,6 +19,8 @@ import {
   CartesianGrid, Legend, Cell
 } from 'recharts';
 
+import AddTargetModal from '../components/AddTargetModal';
+
 interface MutualFundsProps {
   onViewStock: (scrip: string) => void;
 }
@@ -35,6 +37,24 @@ const FUND_CODE_TO_NAME: Record<string, string> = {
   'P': 'Parag Parikh Flexi Cap Fund',
   'Q': 'Quant Flexi Cap Fund',
   'J': 'JM Flexicap Fund'
+};
+
+const parseFundInitialWord = (rawName: string | undefined): string => {
+  if (!rawName) return '';
+  const trimmed = rawName.trim();
+  if (trimmed === 'PPFCF' || trimmed.startsWith('Parag Parikh')) {
+    return 'Parag';
+  }
+  if (trimmed.startsWith('HDFC')) {
+    return 'HDFC';
+  }
+  if (trimmed.startsWith('Quant')) {
+    return 'Quant';
+  }
+  if (trimmed.startsWith('JM')) {
+    return 'JM';
+  }
+  return trimmed.split(/\s+/)[0];
 };
 
 const FILTER_CATEGORIES = [
@@ -86,6 +106,10 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   const [stockHistory, setStockHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Target modal state
+  const [targetModalOpen, setTargetModalOpen] = useState<boolean>(false);
+  const [targetModalScript, setTargetModalScript] = useState<string>('');
 
   // Load Mutual Fund summary and analytics
   const loadData = async () => {
@@ -148,7 +172,8 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       rows = rows.filter(r => 
         r.stock_name.toLowerCase().includes(q) || 
         (r.symbol && r.symbol.toLowerCase().includes(q)) ||
-        r.industry.toLowerCase().includes(q)
+        r.industry.toLowerCase().includes(q) ||
+        (r.mutual_fund && r.mutual_fund.toLowerCase().includes(q))
       );
     }
 
@@ -218,7 +243,7 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
         break;
       case 'BIG_SELL':
         rows = rows.filter(r => r.change_1m_crore < -0.0001 && r.status !== 'EXITED');
-        rows.sort((a, b) => a.change_1m_crore - b.change_1m_crore); // Sorted asc so biggest negative is first
+        rows.sort((a, b) => a.change_1m_crore - b.change_1m_crore);
         rows = rows.slice(0, 15);
         break;
       case 'AGG_ACC':
@@ -239,7 +264,6 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
         rows = rows.filter(r => r.holding_funds && r.holding_funds.length >= 3);
         break;
       case 'COMMON_ALL':
-        // Dynamically get the count of active funds from summary
         const activeFundsCount = summary?.number_of_funds ?? 4;
         rows = rows.filter(r => r.holding_funds && r.holding_funds.length === activeFundsCount);
         break;
@@ -271,14 +295,15 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       accumulatedMultiple: 0
     };
 
-    const stocksHeld = analytics.filter(r => r.latest_value_crore > 0).length;
+    const uniqueSymbols = new Set(analytics.filter(r => r.latest_value_crore > 0).map(r => r.symbol || r.stock_name));
+    const stocksHeld = uniqueSymbols.size;
     const totalVal = analytics.reduce((s, r) => s + r.latest_value_crore, 0);
     const newEntries = analytics.filter(r => r.status === 'NEW').length;
     const increased = analytics.filter(r => r.change_1m_crore > 0.0001 && r.status !== 'NEW').length;
     const decreased = analytics.filter(r => r.change_1m_crore < -0.0001 && r.status !== 'EXITED').length;
     const exits = analytics.filter(r => r.status === 'EXITED').length;
 
-    // Multi-fund holdings metrics
+    // Multi-fund holdings metrics across unique stocks
     const held2Plus = analytics.filter(r => r.holding_funds && r.holding_funds.length >= 2).length;
     const held3Plus = analytics.filter(r => r.holding_funds && r.holding_funds.length >= 3).length;
     
@@ -303,12 +328,93 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   // AG Grid columns configuration
   const columnDefs = useMemo(() => {
     const colList: any[] = [
+      // 1. Portfolio Signal (1st position - far left)
+      {
+        field: 'portfolio_signal',
+        headerName: 'Portfolio Signal',
+        flex: 1.3,
+        minWidth: 145,
+        cellRenderer: (p: any) => {
+          if (!p.value) return '—';
+          
+          let color = '#94a3b8';
+          let bg = 'rgba(148,163,184,0.1)';
+          let border = '1px solid rgba(148,163,184,0.2)';
+
+          if (p.value === 'New Entry') {
+            color = '#10b981';
+            bg = 'rgba(16,185,129,0.1)';
+            border = '1px solid rgba(16,185,129,0.2)';
+          } else if (p.value === 'Strong Accumulation') {
+            color = '#047857';
+            bg = 'rgba(4,120,87,0.15)';
+            border = '1px solid rgba(4,120,87,0.2)';
+          } else if (p.value === 'Accumulating') {
+            color = '#34d399';
+            bg = 'rgba(52,211,153,0.1)';
+            border = '1px solid rgba(52,211,153,0.2)';
+          } else if (p.value === 'Strong Reduction') {
+            color = '#b91c1c';
+            bg = 'rgba(185,28,28,0.15)';
+            border = '1px solid rgba(185,28,28,0.2)';
+          } else if (p.value === 'Reducing') {
+            color = '#f87171';
+            bg = 'rgba(248,113,113,0.1)';
+            border = '1px solid rgba(248,113,113,0.2)';
+          } else if (p.value === 'Stable Holding') {
+            color = '#3b82f6';
+            bg = 'rgba(59,130,246,0.1)';
+            border = '1px solid rgba(59,130,246,0.2)';
+          } else if (p.value === 'Exited') {
+            color = '#ef4444';
+            bg = 'rgba(239,68,68,0.1)';
+            border = '1px solid rgba(239,68,68,0.2)';
+          } else if (p.value === 'Mixed Fund View') {
+            color = '#a855f7';
+            bg = 'rgba(168,85,247,0.1)';
+            border = '1px solid rgba(168,85,247,0.2)';
+          }
+
+          return (
+            <Chip 
+              label={p.value} 
+              size="small" 
+              sx={{ color, bgcolor: bg, border, fontWeight: 700, fontSize: 10 }} 
+            />
+          );
+        }
+      },
+      // 2. Mutual Funds Scheme Source (2nd position)
+      {
+        field: 'mutual_fund',
+        headerName: 'Mutual Funds',
+        flex: 1.2,
+        minWidth: 120,
+        cellRenderer: (p: any) => {
+          const rawName = p.value || (p.data?.fund_code ? FUND_CODE_TO_NAME[p.data.fund_code] : '');
+          const initialWord = parseFundInitialWord(rawName);
+          if (!initialWord) return '—';
+          return (
+            <Chip
+              label={initialWord}
+              size="small"
+              sx={{
+                bgcolor: 'rgba(139,92,246,0.15)',
+                color: '#a78bfa',
+                fontWeight: 700,
+                fontSize: 11,
+                border: '1px solid rgba(139,92,246,0.3)'
+              }}
+            />
+          );
+        }
+      },
+      // 3. Symbol (3rd position)
       {
         field: 'symbol',
         headerName: 'Symbol',
         flex: 1.5,
         minWidth: 140,
-        pinned: 'left',
         cellRenderer: (p: any) => {
           if (!p.data) return '';
           const displayText = p.value || p.data.stock_name;
@@ -374,7 +480,6 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
           if (!p.value) return '—';
           const { val, pct, status } = p.value;
 
-          // If the stock is NEW and we are evaluating 1M Change, display a green NEW chip
           if (c.label === '1M Change' && status === 'NEW') {
             return (
               <Chip 
@@ -385,7 +490,6 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
             );
           }
 
-          // If the stock is EXITED and we are evaluating 1M Change, display a red EXITED chip
           if (c.label === '1M Change' && status === 'EXITED') {
             return (
               <Chip 
@@ -409,59 +513,42 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       });
     });
 
-    // Portfolio Signal column
+    // 4. Target Action Column (interactive "Add to" button)
     colList.push({
-      field: 'portfolio_signal',
-      headerName: 'Portfolio Signal',
-      flex: 1.3,
-      minWidth: 140,
+      field: 'target',
+      headerName: 'Target',
+      flex: 1,
+      minWidth: 100,
+      sortable: false,
+      filter: false,
       cellRenderer: (p: any) => {
-        if (!p.value) return '—';
-        
-        let color = '#94a3b8';
-        let bg = 'rgba(148,163,184,0.1)';
-        let border = '1px solid rgba(148,163,184,0.2)';
-
-        if (p.value === 'New Entry') {
-          color = '#10b981';
-          bg = 'rgba(16,185,129,0.1)';
-          border = '1px solid rgba(16,185,129,0.2)';
-        } else if (p.value === 'Strong Accumulation') {
-          color = '#047857';
-          bg = 'rgba(4,120,87,0.15)';
-          border = '1px solid rgba(4,120,87,0.2)';
-        } else if (p.value === 'Accumulating') {
-          color = '#34d399';
-          bg = 'rgba(52,211,153,0.1)';
-          border = '1px solid rgba(52,211,153,0.2)';
-        } else if (p.value === 'Strong Reduction') {
-          color = '#b91c1c';
-          bg = 'rgba(185,28,28,0.15)';
-          border = '1px solid rgba(185,28,28,0.2)';
-        } else if (p.value === 'Reducing') {
-          color = '#f87171';
-          bg = 'rgba(248,113,113,0.1)';
-          border = '1px solid rgba(248,113,113,0.2)';
-        } else if (p.value === 'Stable Holding') {
-          color = '#3b82f6';
-          bg = 'rgba(59,130,246,0.1)';
-          border = '1px solid rgba(59,130,246,0.2)';
-        } else if (p.value === 'Exited') {
-          color = '#ef4444';
-          bg = 'rgba(239,68,68,0.1)';
-          border = '1px solid rgba(239,68,68,0.2)';
-        } else if (p.value === 'Mixed Fund View') {
-          color = '#a855f7';
-          bg = 'rgba(168,85,247,0.1)';
-          border = '1px solid rgba(168,85,247,0.2)';
-        }
-
+        if (!p.data) return null;
+        const scrip = p.data.symbol || p.data.stock_name;
         return (
-          <Chip 
-            label={p.value} 
-            size="small" 
-            sx={{ color, bgcolor: bg, border, fontWeight: 700, fontSize: 10 }} 
-          />
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={() => {
+              setTargetModalScript(scrip);
+              setTargetModalOpen(true);
+            }}
+            sx={{
+              borderColor: '#2962ff',
+              color: '#2962ff',
+              fontSize: 11,
+              fontWeight: 700,
+              py: 0.2,
+              px: 1.2,
+              textTransform: 'none',
+              borderRadius: 1.5,
+              '&:hover': {
+                bgcolor: 'rgba(41,98,255,0.1)',
+                borderColor: '#2962ff'
+              }
+            }}
+          >
+            Add to
+          </Button>
         );
       }
     });
@@ -840,9 +927,18 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
                 </>
               )}
             </Box>
-          </Box>
-        )}
       </Drawer>
+
+      {/* Add Target Modal */}
+      <AddTargetModal
+        open={targetModalOpen}
+        onClose={() => setTargetModalOpen(false)}
+        initialScript={targetModalScript}
+        initialCategory="Mutual Funds"
+        isLockedScript={true}
+        isLockedCategory={true}
+        onSuccess={loadData}
+      />
     </Box>
   );
 };

@@ -324,17 +324,19 @@ class MutualFundEngine:
         # Yes, we group by ISIN/Stock Name and Month and sum their Quantity, Value, and compute weighted LTP.
         # Let's group by Stock Name (or ISIN) to compute stock-level analytics.
         
-        # We will track each stock's holdings month-wise
-        # We use ISIN + Stock Name + Stock Name.1 as unique stock identifier
-        stock_groups = df.groupby(["ISIN", "Stock Name", "Stock Name.1", "Industry"]).groups
+        # We group by (Fund Code, Mutual Fund, ISIN, Stock Name, Symbol, Industry)
+        # so each mutual fund scheme holding a stock is computed as an independent row model
+        stock_groups = df.groupby(["Fund Code", "Mutual Fund", "ISIN", "Stock Name", "Stock Name.1", "Industry"]).groups
         
         analytics_list = []
 
-        for (isin, name, symbol, industry) in stock_groups.keys():
-            # Get data for this stock
-            stock_df = df[(df["ISIN"] == isin) & (df["Stock Name"] == name)]
+        latest_m_global = months[-1]
+
+        for (f_code, f_name, isin, name, symbol, industry) in stock_groups.keys():
+            # Get data for this fund scheme and stock
+            stock_df = df[(df["Fund Code"] == f_code) & (df["ISIN"] == isin) & (df["Stock Name"] == name)]
             
-            # Create a dict of month -> row details
+            # Create a dict of month -> row details for this specific scheme
             month_data = {}
             for _, r in stock_df.iterrows():
                 month_data[r["Month"]] = {
@@ -344,30 +346,12 @@ class MutualFundEngine:
                     "pct_nav": r["% to NAV"]
                 }
 
-            # Aggregate values across months if multiple funds are grouped (when selected_fund_code is None/ALL)
-            if not selected_fund_code or selected_fund_code == "ALL":
-                # Need to sum quantity/value across all funds in the same month
-                month_data = {}
-                grouped_by_month = stock_df.groupby("Month")
-                for m, m_df in grouped_by_month:
-                    tot_qty = m_df["Quantity"].sum()
-                    tot_val = m_df["Holding Value Crore"].sum()
-                    avg_ltp = m_df["LTP"].mean() # LTP should be identical, but taking mean is safe
-                    # For % to NAV, let's sum or average? Let's take the mean or sum, wait: % to NAV is fund-specific.
-                    # Across all funds, we can just keep the list or mean of NAV %
-                    month_data[m] = {
-                        "quantity": tot_qty,
-                        "value_crore": tot_val,
-                        "ltp": avg_ltp,
-                        "pct_nav": m_df["% to NAV"].tolist() # keep list of NAVs
-                    }
-
             # Month-by-month values
             month_values = []
             for m in months:
                 month_values.append(month_data.get(m, {"quantity": 0.0, "value_crore": 0.0, "ltp": 0.0, "pct_nav": 0.0}))
 
-            # Now calculate trends
+            # Now calculate trends for this scheme
             latest_idx = len(months) - 1
             latest_val = month_values[latest_idx]["value_crore"]
             prev_val = month_values[latest_idx - 1]["value_crore"] if latest_idx > 0 else 0.0
@@ -406,7 +390,6 @@ class MutualFundEngine:
                     pct_change_3m = (change_3m / prev_3m) * 100.0
 
             # Trend Classification
-            # Increased continuously for last 2 months: Month[Latest] > Month[Latest-1] AND Month[Latest-1] > Month[Latest-2]
             inc_2m = False
             dec_2m = False
             if latest_idx >= 2:
@@ -439,19 +422,16 @@ class MutualFundEngine:
                 vals = [w["value_crore"] for w in window]
                 if all(v > 0.0 for v in vals):
                     consistent_5m = True
-                    # Classify 5-month trend: Stable, Gradually Increasing, Gradually Decreasing, Mixed
                     avg_val = sum(vals) / 5.0
                     max_val = max(vals)
                     min_val = min(vals)
                     
-                    # Tolerance bounds
                     rel_tol = avg_val * STABLE_RELATIVE_TOLERANCE
                     tol = max(rel_tol, STABLE_ABSOLUTE_TOLERANCE)
                     
                     if (max_val - min_val) <= tol:
                         trend_5m = "Stable"
                     else:
-                        # Calculate slope or MoM counts
                         increases = 0
                         decreases = 0
                         for i in range(1, 5):
@@ -467,15 +447,7 @@ class MutualFundEngine:
                         else:
                             trend_5m = "Mixed"
 
-            # Portfolio Signal (derived analytical label)
-            # - New Entry: Status is NEW
-            # - Strong Accumulation: Holding increased continuously for 3 months
-            # - Accumulating: Latest month holding increased (but not strong)
-            # - Strong Reduction: Holding decreased continuously for 3 months
-            # - Reducing: Latest month holding decreased (but not strong)
-            # - Stable Holding: Consistently held and trend_5m is Stable
-            # - Exited: Status is EXITED
-            # - Mixed Fund View: (For "ALL" view) when different funds have opposing activity
+            # Portfolio Signal (derived analytical label for this scheme)
             signal = "Stable Holding" if (consistent_5m and trend_5m == "Stable") else "Active"
             
             if status == "NEW":
@@ -491,7 +463,7 @@ class MutualFundEngine:
             elif change_1m < 0:
                 signal = "Reducing"
 
-            # Check fund changes in latest month (for all-fund aggregation and analysis)
+            # Check fund changes in latest month
             accumulating_funds = []
             reducing_funds = []
             is_divergent = False
@@ -500,32 +472,34 @@ class MutualFundEngine:
                 latest_m = months[latest_idx]
                 prev_m = months[latest_idx - 1]
                 
-                # Check each fund's activity
                 fund_changes = {}
-                for f_name, f_code in FUND_NAME_TO_CODE.items():
-                    f_stock = stock_df[stock_df["Fund Code"] == f_code]
-                    val_latest = f_stock[f_stock["Month"] == latest_m]["Holding Value Crore"].sum()
-                    val_prev = f_stock[f_stock["Month"] == prev_m]["Holding Value Crore"].sum()
+                for fc_name, fc_code in FUND_NAME_TO_CODE.items():
+                    f_stock_all = self._cached_df[(self._cached_df["Fund Code"] == fc_code) & (self._cached_df["ISIN"] == isin)]
+                    val_latest = f_stock_all[f_stock_all["Month"] == latest_m]["Holding Value Crore"].sum()
+                    val_prev = f_stock_all[f_stock_all["Month"] == prev_m]["Holding Value Crore"].sum()
                     diff = val_latest - val_prev
-                    fund_changes[f_code] = diff
+                    fund_changes[fc_code] = diff
                 
                 accumulating_funds = [fc for fc, diff in fund_changes.items() if diff > 0.0001]
                 reducing_funds = [fc for fc, diff in fund_changes.items() if diff < -0.0001]
                 
                 if len(accumulating_funds) > 0 and len(reducing_funds) > 0:
                     is_divergent = True
-                    if not selected_fund_code or selected_fund_code == "ALL":
-                        signal = "Mixed Fund View"
                     divergent_details = {
                         "accumulating_funds": accumulating_funds,
                         "reducing_funds": reducing_funds
                     }
 
-            # Funds list holding this stock in the latest month
-            latest_m = months[latest_idx]
-            holding_funds = stock_df[stock_df["Month"] == latest_m]["Fund Code"].unique().tolist()
+            # Funds list holding this stock in the latest month across all schemes
+            all_holding_df = self._cached_df[(self._cached_df["ISIN"] == isin) & (self._cached_df["Month"] == latest_m_global) & (self._cached_df["Holding Value Crore"] > 0)]
+            holding_funds = all_holding_df["Fund Code"].unique().tolist()
+            if not holding_funds:
+                all_holding_df = self._cached_df[(self._cached_df["Stock Name"] == name) & (self._cached_df["Month"] == latest_m_global) & (self._cached_df["Holding Value Crore"] > 0)]
+                holding_funds = all_holding_df["Fund Code"].unique().tolist()
             
             analytics_list.append({
+                "fund_code": f_code,
+                "mutual_fund": f_name,
                 "isin": isin,
                 "stock_name": name,
                 "symbol": symbol,
