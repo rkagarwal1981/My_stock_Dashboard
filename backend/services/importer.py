@@ -5,9 +5,11 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session
 from models.transaction import Transaction
+from models.holding import Holding
 from models.import_history import ImportHistory
 from models.audit_log import AuditLog
 from services.lifo_engine import compute_lifo_settlement
+from services.market_data import fetch_live_prices
 
 # Folder to scan
 SCAN_DIR = r"C:\Users\admin\OneDrive\01_MyGoal\Shares Market\Antigravity"
@@ -395,15 +397,12 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
                 
         db.commit()
         
-        # Log audit
-        audit = AuditLog(
-            category="IMPORT",
-            description=f"Successfully imported {count} new transactions from {filename} for {broker}.",
-            details=f"Total parsed: {len(parsed_txs)}"
-        )
-        db.add(audit)
-        db.commit()
-        
+        # Automatically reconcile holdings table against official broker portfolio snapshots
+        try:
+            reconcile_broker_holdings_snapshots(db)
+        except Exception as es:
+            print(f"Error syncing holdings in import_file: {es}")
+
         return count
         
     except Exception as e:
@@ -483,4 +482,139 @@ def scan_and_import_directory(db: Session) -> dict:
         except Exception as e:
             results["errors"].append({"filename": filename, "error": str(e)})
             
+    # Automatically reconcile holdings table against official broker portfolio snapshots
+    try:
+        reconcile_broker_holdings_snapshots(db)
+    except Exception as es:
+        print(f"Error syncing holdings after scan: {es}")
+
     return results
+
+
+def reconcile_broker_holdings_snapshots(db: Session) -> int:
+    """
+    Reconciles the Holding table in portfolio.db directly against official Broker Portfolio Snapshots.
+    Does NOT compute active holdings from buy/sell transaction sums.
+    """
+    workspace_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    if not os.path.exists(os.path.join(workspace_root, "MStock_Live_Holdings.xlsx")):
+        workspace_root = os.getcwd()
+
+    holding_files = []
+    
+    mstock_file = os.path.join(workspace_root, "MStock_Live_Holdings.xlsx")
+    zerodha_file = os.path.join(workspace_root, "Zerodha_Live_Holdings.xlsx")
+    
+    if os.path.exists(mstock_file):
+        holding_files.append(mstock_file)
+    if os.path.exists(zerodha_file):
+        holding_files.append(zerodha_file)
+        
+    scan_dir = r"C:\Users\admin\OneDrive\01_MyGoal\Shares Market\Antigravity"
+    if os.path.exists(scan_dir):
+        for pattern in ["*Holding*.xlsx", "*Holding*.csv", "*holdings*.xlsx", "*holdings*.csv"]:
+            for f in glob.glob(os.path.join(scan_dir, pattern)):
+                if f not in holding_files:
+                    holding_files.append(f)
+
+    snapshot_holdings = {}
+
+    for filepath in holding_files:
+        try:
+            filename = os.path.basename(filepath).lower()
+            if filepath.endswith('.csv'):
+                df = pd.read_csv(filepath)
+            else:
+                df = pd.read_excel(filepath)
+                
+            for _, row in df.iterrows():
+                broker = str(row.get('Broker') or row.get('broker') or '').strip()
+                if not broker:
+                    if 'mstock' in filename:
+                        broker = 'MStock'
+                    elif 'zerodha' in filename:
+                        broker = 'Zerodha'
+                    elif 'dhan' in filename:
+                        broker = 'Dhan'
+                    else:
+                        continue
+
+                scrip = str(row.get('Scrip') or row.get('scrip') or row.get('Symbol') or row.get('symbol') or '').strip()
+                if not scrip:
+                    continue
+
+                if not scrip.endswith('-EQ') and not any(x in scrip for x in [" FUT", " OPT", "-BE"]):
+                    scrip = f"{scrip}-EQ"
+
+                qty = float(row.get('Quantity') or row.get('quantity') or row.get('qty') or 0)
+                avg_p = float(row.get('Avg Price') or row.get('avg_price') or row.get('average_price') or 0)
+                ltp = float(row.get('LTP') or row.get('ltp') or row.get('close_price') or avg_p)
+                cur_v = float(row.get('Current Value') or row.get('current_value') or (qty * ltp))
+                pnl = float(row.get('P&L') or row.get('pnl') or (cur_v - (qty * avg_p)))
+
+                if qty > 0:
+                    snapshot_holdings[(broker, scrip)] = {
+                        'broker': broker,
+                        'script': scrip,
+                        'quantity': qty,
+                        'avg_price': avg_p,
+                        'ltp': ltp,
+                        'current_value': cur_v,
+                        'pnl': pnl
+                    }
+        except Exception as e:
+            print(f"Error reading snapshot file {filepath}: {e}")
+
+    if not snapshot_holdings:
+        print("No official broker holding snapshots found to reconcile.")
+        return 0
+
+    db_holdings = db.query(Holding).all()
+    db_holding_map = {(h.broker, h.script): h for h in db_holdings}
+
+    updated_count = 0
+    created_count = 0
+    deleted_count = 0
+
+    # 1. Upsert snapshot holdings into DB
+    for key, snap in snapshot_holdings.items():
+        broker, script = key
+        qty = snap['quantity']
+        avg_p = snap['avg_price']
+        ltp = snap['ltp']
+        cur_v = snap['current_value']
+        pnl = snap['pnl']
+
+        if key in db_holding_map:
+            h = db_holding_map[key]
+            h.quantity = qty
+            h.avg_price = avg_p
+            h.ltp = ltp
+            h.current_value = cur_v
+            h.pnl = pnl
+            h.last_updated = datetime.now()
+            updated_count += 1
+        else:
+            h = Holding(
+                broker=broker,
+                script=script,
+                quantity=qty,
+                avg_price=avg_p,
+                ltp=ltp,
+                current_value=cur_v,
+                pnl=pnl,
+                last_updated=datetime.now()
+            )
+            db.add(h)
+            created_count += 1
+
+    # 2. Delete any holding in DB that is NOT present in official broker snapshots
+    for key, db_h in db_holding_map.items():
+        if key not in snapshot_holdings:
+            db.delete(db_h)
+            deleted_count += 1
+
+    db.commit()
+    return len(snapshot_holdings)
+
+

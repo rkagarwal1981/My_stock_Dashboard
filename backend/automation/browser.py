@@ -418,7 +418,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                 holdings_resp = mconnect.get_holdings()
                 if hasattr(holdings_resp, "json"):
                     resp_json = holdings_resp.json()
-                    if isinstance(resp_json, dict):
+                    if isinstance(resp_json, dict) and resp_json.get("data"):
                         h_data = resp_json.get("data")
                         if isinstance(h_data, list):
                             data.extend(h_data)
@@ -431,7 +431,22 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                 elif isinstance(holdings_resp, list):
                     data.extend(holdings_resp)
             except Exception as eh:
-                print(f"Error fetching MStock holdings: {eh}")
+                print(f"Error fetching MStock holdings via get_holdings: {eh}")
+
+            if not data:
+                print("MStock get_holdings returned empty. Querying get_net_position()...")
+                try:
+                    pos_resp = mconnect.get_net_position()
+                    if hasattr(pos_resp, "json"):
+                        resp_json = pos_resp.json()
+                        if isinstance(resp_json, dict) and resp_json.get("data"):
+                            pos_data = resp_json.get("data")
+                            if isinstance(pos_data, dict):
+                                data.extend(pos_data.get("net") or pos_data.get("position") or [])
+                            elif isinstance(pos_data, list):
+                                data.extend(pos_data)
+                except Exception as ep:
+                    print(f"Error fetching MStock positions via get_net_position: {ep}")
 
             holdings = []
             for item in data:

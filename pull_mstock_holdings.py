@@ -155,21 +155,39 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
             mconnect.generate_session(api_key, totp_code, "W")
             
         print("Fetching holdings directly from mStock Portfolio API...")
-        holdings_resp = mconnect.get_holdings()
-        print("Raw Holdings response:")
-        
         raw_holdings = []
-        if hasattr(holdings_resp, "json"):
-            resp_json = holdings_resp.json()
-            print(json.dumps(resp_json, indent=2))
-            if isinstance(resp_json, dict):
-                raw_holdings = resp_json.get("data")
-            elif isinstance(resp_json, list):
-                raw_holdings = resp_json
-        else:
-            print(holdings_resp)
-            raw_holdings = holdings_resp
-            
+        try:
+            holdings_resp = mconnect.get_holdings()
+            if hasattr(holdings_resp, "json"):
+                resp_json = holdings_resp.json()
+                if isinstance(resp_json, dict) and resp_json.get("data"):
+                    h_data = resp_json.get("data")
+                    if isinstance(h_data, list):
+                        raw_holdings = h_data
+                    elif isinstance(h_data, dict):
+                        raw_holdings = h_data.get("holdings") or h_data.get("portfolio") or []
+                    else:
+                        raw_holdings = resp_json.get("holdings") or resp_json.get("portfolio") or []
+                elif isinstance(resp_json, list):
+                    raw_holdings = resp_json
+        except Exception as eh:
+            print(f"get_holdings exception: {eh}")
+
+        if not raw_holdings:
+            print("get_holdings() returned null/empty. Querying get_net_position()...")
+            try:
+                pos_resp = mconnect.get_net_position()
+                if hasattr(pos_resp, "json"):
+                    resp_json = pos_resp.json()
+                    if isinstance(resp_json, dict) and resp_json.get("data"):
+                        pos_data = resp_json.get("data")
+                        if isinstance(pos_data, dict):
+                            raw_holdings = pos_data.get("net") or pos_data.get("position") or []
+                        elif isinstance(pos_data, list):
+                            raw_holdings = pos_data
+            except Exception as ep:
+                print(f"get_net_position exception: {ep}")
+
         if not isinstance(raw_holdings, list):
             raw_holdings = []
             

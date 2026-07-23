@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from services.database import get_db, engine
 from services.lifo_engine import compute_lifo_settlement, compute_fifo_settlement, calculate_xirr
-from services.importer import scan_and_import_directory, import_file, SCAN_DIR, run_trade_pullers
+from services.importer import scan_and_import_directory, import_file, SCAN_DIR, run_trade_pullers, recalculate_and_sync_holdings
 from services.market_data import fetch_live_prices, fetch_pe_info
 from models.user import User
 from models.credentials import BrokerCredentials
@@ -375,8 +375,12 @@ def export_holdings(
 @router.get("/holdings")
 def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     holdings = db.query(Holding).all()
-    
-    holdings = db.query(Holding).all()
+    if not holdings:
+        try:
+            recalculate_and_sync_holdings(db)
+            holdings = db.query(Holding).all()
+        except Exception as e:
+            print(f"Error auto-syncing holdings on get_holdings: {e}")
         
     live_prices = {}
     if refresh_prices and holdings:
@@ -2416,7 +2420,8 @@ def get_watchlist_section2(
 
 @router.get("/watchlist/section3")
 def get_watchlist_section3(
-    N: int = 5,
+    N: int = 10,
+    tx_type: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -2499,7 +2504,10 @@ def get_watchlist_section3(
             "action_checked": action_checked,
             "last_updated": h.last_updated
         })
-        
+
+    if tx_type:
+        movers = [m for m in movers if m.get("latest_tx_type") and m["latest_tx_type"].lower() == tx_type.lower()]
+
     pos_movers = sorted(movers, key=lambda x: x["dip_pct"], reverse=True)
     neg_movers = sorted(movers, key=lambda x: x["dip_pct"])
     
