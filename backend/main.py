@@ -2,6 +2,7 @@ import os
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from services.database import engine, Base, SessionLocal
@@ -13,6 +14,8 @@ from models.target_category import TargetCategory
 from api.auth import get_password_hash
 from services.importer import scan_and_import_directory, run_trade_pullers
 from models.audit_log import AuditLog
+from models.watchlist import WatchlistAction, WatchlistManualScript
+from models.stock_research import StockNote, StockAttachment
 
 # Create the DB tables
 Base.metadata.create_all(bind=engine)
@@ -106,6 +109,11 @@ def startup_scan():
 
 # Mount API routes
 app.include_router(api_router, prefix="/api")
+
+# Mount research uploads directory as static files
+uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", "stock_research")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/static/research", StaticFiles(directory=uploads_dir), name="research")
 
 @app.get("/")
 def read_root():

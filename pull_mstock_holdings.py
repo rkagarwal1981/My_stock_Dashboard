@@ -223,8 +223,11 @@ def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
         page = context.new_page()
         
         try:
-            print("Navigating to MStock watchlist/Portfolio page...")
-            page.goto("https://trade.mstock.com/#/index/watchlist/Portfolio", timeout=30000)
+            print("Navigating to MStock page...")
+            try:
+                page.goto("https://trade.mstock.com/#/login", timeout=30000, wait_until="domcontentloaded")
+            except Exception:
+                page.goto("https://trade.mstock.com/#/index/watchlist/Portfolio", timeout=30000, wait_until="domcontentloaded")
             time.sleep(3)
             
             # Check if login is required

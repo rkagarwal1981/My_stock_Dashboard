@@ -174,7 +174,7 @@ const Settings: React.FC = () => {
 
       <Grid container spacing={3}>
         {brokers.map(b => (
-          <Grid item xs={12} md={4} key={b.key}>
+          <Grid size={{ xs: 12, md: 4 }} key={b.key}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: `1px solid ${b.color}44`, borderRadius: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
               <CardContent sx={{ p: 3, flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 3 }}>
@@ -199,14 +199,16 @@ const Settings: React.FC = () => {
                         value={creds[b.key][f.key] || ''}
                         onChange={e => handleChange(b.key, f.key, e.target.value)}
                         sx={{ mb: 2.5 }}
-                        InputProps={isPassType ? {
-                          endAdornment: (
-                            <InputAdornment position="end">
-                              <IconButton size="small" onClick={() => setShowPass(p => ({ ...p, [showPassKey]: !p[showPassKey] }))}>
-                                {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-                              </IconButton>
-                            </InputAdornment>
-                          )
+                        slotProps={isPassType ? {
+                          input: {
+                            endAdornment: (
+                              <InputAdornment position="end">
+                                <IconButton size="small" onClick={() => setShowPass(p => ({ ...p, [showPassKey]: !p[showPassKey] }))}>
+                                  {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                                </IconButton>
+                              </InputAdornment>
+                            )
+                          }
                         } : undefined}
                       />
                     );

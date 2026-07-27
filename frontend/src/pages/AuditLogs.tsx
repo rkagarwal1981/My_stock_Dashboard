@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppSelector } from '../store';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -20,7 +20,7 @@ const AuditLogs: React.FC = () => {
     SYSTEM_ERROR: { bg: '#ef444422', fg: '#ef4444' },
   };
 
-  const columns = [
+  const columns = useMemo(() => [
     { field: 'timestamp', headerName: 'Time', flex: 1.5, minWidth: 170,
       valueFormatter: (p: any) => p.value ? new Date(p.value).toLocaleString('en-IN') : '' },
     {
@@ -32,7 +32,7 @@ const AuditLogs: React.FC = () => {
     },
     { field: 'description', headerName: 'Description', flex: 3, minWidth: 300 },
     { field: 'details', headerName: 'Details', flex: 2, minWidth: 200 },
-  ];
+  ], []);
 
   const counts = categories.slice(1).map(c => ({ cat: c, count: logs.filter((l: any) => l.category === c).length }));
 
@@ -45,7 +45,7 @@ const AuditLogs: React.FC = () => {
 
       <Grid container spacing={2} sx={{ mb: 2 }}>
         {counts.map(c => (
-          <Grid item xs={6} md={2.4} key={c.cat}>
+          <Grid size={{ xs: 6, md: 2.4 }} key={c.cat}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontSize: 10 }}>{c.cat}</Typography>

@@ -1,12 +1,13 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useAppSelector } from '../store';
+import axios from 'axios';
 import {
   Box, Grid, Card, CardContent, Typography, Divider, Button,
   FormControl, InputLabel, Select, MenuItem,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper
 } from '@mui/material';
 import {
-  ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList
+  ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList, ReferenceLine
 } from 'recharts';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
@@ -68,6 +69,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
 
   const fmt = (n: number) => `₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
   const fmtPct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+  const fmtIndianShort = (v: number): string => {
+    const absVal = Math.abs(v);
+    const sign = v >= 0 ? '' : '-';
+    if (absVal >= 100_000) {
+      return `₹${sign}${parseFloat((absVal / 100_000).toFixed(2))}L`;
+    }
+    if (absVal >= 1_000) {
+      return `₹${sign}${parseFloat((absVal / 1_000).toFixed(1))}K`;
+    }
+    return `₹${sign}${Math.round(absVal)}`;
+  };
 
   const totalInvestment = analytics?.summary?.total_investment ?? 0;
   const totalMarketValue = analytics?.summary?.total_market_value ?? 0;
@@ -96,6 +108,31 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
     });
     return Array.from(brokers).sort();
   }, [transactions]);
+
+  // ── Capital Efficiency data from backend ──────────────────────────────────
+  const [efficiencyData, setEfficiencyData] = useState<any[]>([]);
+
+  const fetchEfficiency = useCallback(async () => {
+    try {
+      const params: any = {};
+      if (selectedBroker !== 'All') params.broker = selectedBroker;
+      const res = await axios.get('/api/analytics/capital-efficiency', { params });
+      setEfficiencyData(res.data);
+    } catch {
+      setEfficiencyData([]);
+    }
+  }, [selectedBroker]);
+
+  useEffect(() => { fetchEfficiency(); }, [fetchEfficiency]);
+
+  // Map efficiency data by month for quick lookup
+  const efficiencyMap = useMemo(() => {
+    const map: Record<string, any> = {};
+    for (const row of efficiencyData) {
+      map[row.month] = row;
+    }
+    return map;
+  }, [efficiencyData]);
 
   // Set default selected month to latest month
   useEffect(() => {
@@ -161,6 +198,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
         };
       });
   }, [transactions, selectedMonth, selectedBroker]);
+
+  // Compute average daily buy & sell for trendlines
+  const avgDailyBuy = useMemo(() => {
+    if (dailyRotationData.length === 0) return 0;
+    const sum = dailyRotationData.reduce((a, d) => a + d.purchase, 0);
+    return Math.round(sum / dailyRotationData.length);
+  }, [dailyRotationData]);
+
+  const avgDailySell = useMemo(() => {
+    if (dailyRotationData.length === 0) return 0;
+    const sum = dailyRotationData.reduce((a, d) => a + d.sell, 0);
+    return Math.round(sum / dailyRotationData.length);
+  }, [dailyRotationData]);
 
   // Compute rotation summary cards data
   const rotationSummary = useMemo(() => {
@@ -254,7 +304,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
 
       {/* Summary Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <SummaryCard
             title="Total Investment"
             value={fmt(totalInvestment)}
@@ -262,7 +312,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
             color="#2962ff"
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <SummaryCard
             title="Market Value"
             value={fmt(totalMarketValue)}
@@ -270,7 +320,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
             color="#06b6d4"
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <SummaryCard
             title="Unrealized P&L"
             value={`${unrealizedPnl >= 0 ? '+' : '-'}${fmt(unrealizedPnl)}`}
@@ -280,7 +330,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
             color={unrealizedPnl >= 0 ? '#10b981' : '#ef4444'}
           />
         </Grid>
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <SummaryCard
             title="Realized P&L"
             value={`${realizedPnl >= 0 ? '+' : '-'}${fmt(realizedPnl)}`}
@@ -357,7 +407,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
 
         {/* Rotation Metrics Row */}
         <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <Box sx={{ p: 2, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid #2a2e43' }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Total Purchases (Deployed)
@@ -367,7 +417,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
               </Typography>
             </Box>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <Box sx={{ p: 2, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid #2a2e43' }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Total Sales (Released)
@@ -377,7 +427,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
               </Typography>
             </Box>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <Box sx={{ p: 2, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid #2a2e43' }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Money Rotated (Volume)
@@ -387,7 +437,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
               </Typography>
             </Box>
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <Box sx={{ p: 2, borderRadius: 2, bgcolor: 'rgba(255,255,255,0.02)', border: '1px solid #2a2e43' }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Net Cash Flow
@@ -436,6 +486,34 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
                   height={36} 
                   formatter={(value) => value === 'purchase' ? 'Daily Purchase' : 'Daily Sell'}
                 />
+                {avgDailyBuy > 0 && (
+                  <ReferenceLine
+                    y={avgDailyBuy}
+                    stroke="#FFFFFF"
+                    strokeDasharray="4 4"
+                    label={{
+                      value: `Avg Buy: ${formatCompactValue(avgDailyBuy)}`,
+                      fill: '#FFFFFF',
+                      position: 'insideTopLeft',
+                      fontSize: 11,
+                      fontWeight: 600
+                    }}
+                  />
+                )}
+                {avgDailySell > 0 && (
+                  <ReferenceLine
+                    y={avgDailySell}
+                    stroke="#FFFFFF"
+                    strokeDasharray="4 4"
+                    label={{
+                      value: `Avg Sell: ${formatCompactValue(avgDailySell)}`,
+                      fill: '#FFFFFF',
+                      position: 'insideBottomLeft',
+                      fontSize: 11,
+                      fontWeight: 600
+                    }}
+                  />
+                )}
                 <Bar dataKey="purchase" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} isAnimationActive={false}>
                   <LabelList 
                     dataKey="purchase" 
@@ -478,6 +556,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
                   <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Total Rotated (Volume)</TableCell>
                   <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Net Cash Flow</TableCell>
                   <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>%age of Net cash flow</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Trading Eff %</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Rotation Eff %</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Avg. Buy</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Avg. Sell</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, borderBottom: '1px solid #2a2e43' }}>Realized Profit</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -504,11 +587,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
                     <TableCell align="right" sx={{ color: row.netFlow >= 0 ? '#10b981' : '#ef4444', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
                       {row.sell > 0 ? `${row.netFlow >= 0 ? '+' : ''}${((row.netFlow / row.sell) * 100).toFixed(1)}%` : '0.0%'}
                     </TableCell>
+                    {(() => {
+                      const eff = efficiencyMap[row.month];
+                      return (
+                        <>
+                          <TableCell align="right" sx={{ color: '#8b5cf6', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
+                            {eff ? `${eff.trading_eff.toFixed(2)}%` : '—'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: '#f59e0b', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
+                            {eff ? `${eff.rotation_eff.toFixed(2)}%` : '—'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: '#06b6d4', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
+                            {eff ? fmtIndianShort(eff.avg_buy) : '—'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: '#ef4444', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
+                            {eff ? fmtIndianShort(eff.avg_sell) : '—'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ color: eff && eff.realized_profit >= 0 ? '#10b981' : '#ef4444', borderBottom: '1px solid #2a2e43', fontWeight: 600 }}>
+                            {eff ? `${eff.realized_profit >= 0 ? '+' : '-'}${fmt(eff.realized_profit)}` : '—'}
+                          </TableCell>
+                        </>
+                      );
+                    })()}
                   </TableRow>
                 ))}
                 {monthlyBreakupData.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} align="center" sx={{ color: 'text.secondary', py: 4 }}>
+                    <TableCell colSpan={11} align="center" sx={{ color: 'text.secondary', py: 4 }}>
                       No data available for the selected broker.
                     </TableCell>
                   </TableRow>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAppSelector } from '../store';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -11,20 +11,31 @@ import StorefrontIcon from '@mui/icons-material/Storefront';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import DownloadIcon from '@mui/icons-material/Download';
+import AttachmentIcon from '@mui/icons-material/Attachment';
 import axios from 'axios';
 
 interface HoldingsProps {
   onViewStock: (scrip: string) => void;
   onScrape: (broker: string) => void;
+  showToast?: (message: string, severity: 'success' | 'error' | 'info') => void;
 }
 
-const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
+const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast }) => {
   const allHoldings = useAppSelector((state) => state.portfolio.holdings);
   const [activeTab, setActiveTab] = useState('all');
   const brokers = ['all', 'MStock', 'Zerodha', 'Dhan'];
   const [popoverAnchor, setPopoverAnchor] = useState<HTMLElement | null>(null);
   const [popoverData, setPopoverData] = useState<any[]>([]);
   const [popoverStock, setPopoverStock] = useState<string>('');
+
+  // Research status: maps script → { attachment_count, has_note }
+  const [researchStatus, setResearchStatus] = useState<Record<string, { attachment_count: number; has_note: boolean }>>({});
+
+  useEffect(() => {
+    axios.get('/api/research/status')
+      .then(res => setResearchStatus(res.data || {}))
+      .catch(() => { /* non-critical, silently ignore */ });
+  }, []);
 
   const handleExport = async (format: 'excel' | 'csv') => {
     try {
@@ -53,13 +64,35 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
     return `₹${Math.round(Number(n)).toLocaleString('en-IN')}`;
   };
 
-  const columnDefs = [
+  const columnDefs = useMemo(() => [
     { field: 'script', headerName: 'Script', flex: 1.5, minWidth: 140,
       cellRenderer: (p: any) => {
         const displayVal = p.value && p.value.endsWith('-EQ') ? p.value.substring(0, p.value.length - 3) : (p.value || '');
+        const info = researchStatus[p.value];
+        const hasResearch = info && (info.attachment_count > 0 || info.has_note);
+        const tipParts: string[] = [];
+        if (info?.attachment_count > 0) tipParts.push(`${info.attachment_count} PDF${info.attachment_count > 1 ? 's' : ''}`);
+        if (info?.has_note) tipParts.push('Research note');
+        const tipText = tipParts.length ? tipParts.join(' · ') : '';
         return (
-          <span style={{ cursor: 'pointer', color: '#2962ff', fontWeight: 600 }} onClick={() => onViewStock(p.value)}>
-            {displayVal}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+            <span style={{ color: '#2962ff', fontWeight: 600 }} onClick={() => onViewStock(p.value)}>
+              {displayVal}
+            </span>
+            {hasResearch && (
+              <MuiTooltip title={tipText} arrow placement="right">
+                <AttachmentIcon
+                  sx={{
+                    fontSize: 14,
+                    color: '#f59e0b',
+                    verticalAlign: 'middle',
+                    opacity: 0.9,
+                    cursor: 'default',
+                    flexShrink: 0,
+                  }}
+                />
+              </MuiTooltip>
+            )}
           </span>
         );
       }
@@ -84,7 +117,7 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
         const tooltipContent = (
           <Box sx={{ p: 0.5 }}>
             {p.value.map((m: any) => (
-              <Typography key={m.fund_code} variant="caption" display="block" sx={{ fontWeight: 600 }}>
+              <Typography key={m.fund_code} variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
                 {m.fund_code} - {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name}
               </Typography>
             ))}
@@ -215,6 +248,50 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
       }
     },
     {
+      headerName: 'Watchlist',
+      flex: 1.2,
+      minWidth: 145,
+      cellRenderer: (p: any) => {
+        const handleMove = async (e: React.MouseEvent) => {
+          e.stopPropagation();
+          try {
+            await axios.post('/api/watchlist/manual', { script: p.data.script });
+            if (showToast) {
+              showToast(`Moved ${p.data.script} to Watchlist manually!`, 'success');
+            }
+          } catch (e: any) {
+            console.error(e);
+            if (showToast) {
+              showToast(e.response?.data?.detail || 'Failed to move to watchlist.', 'error');
+            }
+          }
+        };
+        return (
+          <Button
+            variant="contained"
+            size="small"
+            onClick={handleMove}
+            sx={{
+              textTransform: 'none',
+              fontSize: '11px',
+              bgcolor: 'rgba(234,179,8,0.15)',
+              color: '#eab308',
+              border: '1px solid rgba(234,179,8,0.3)',
+              '&:hover': {
+                bgcolor: 'rgba(234,179,8,0.3)',
+              },
+              height: '24px',
+              borderRadius: '4px',
+              fontWeight: 600,
+              mt: '4px'
+            }}
+          >
+            Add to
+          </Button>
+        );
+      }
+    },
+    {
       field: 'dip_pct',
       headerName: 'Dip %age',
       flex: 1.1,
@@ -330,11 +407,32 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
         return `${p.value >= 0 ? '+' : ''}${p.value.toFixed(2)}%`;
       }
     },
-  ];
+  ], [onViewStock, showToast, researchStatus]);
 
   const totalValue = filteredHoldings.reduce((s: number, h: any) => s + (h.current_value || 0), 0);
   const totalPnl = filteredHoldings.reduce((s: number, h: any) => s + (h.pnl || 0), 0);
   const totalCost = filteredHoldings.reduce((s: number, h: any) => s + (h.quantity * h.avg_price || 0), 0);
+
+  // ─── Avg. Holding Days: derived from global LIFO settlement data ─────────────
+  // Filters to rows with valid numeric holding_days, respects the active broker
+  // tab filter by checking if the scrip appears in filteredHoldings.
+  const settlement = useAppSelector((state) => state.portfolio.settlement);
+  const filteredScripts = useMemo(
+    () => new Set(filteredHoldings.map((h: any) => h.script)),
+    [filteredHoldings]
+  );
+  const avgHoldingDays = useMemo(() => {
+    const settled = settlement.filter(
+      (r: any) =>
+        r.holding_days != null &&
+        !isNaN(Number(r.holding_days)) &&
+        r.pnl != null &&          // only fully/partially settled rows
+        (activeTab === 'all' || filteredScripts.has(r.scrip))
+    );
+    if (settled.length === 0) return null;
+    const sum = settled.reduce((acc: number, r: any) => acc + Number(r.holding_days), 0);
+    return Math.round(sum / settled.length);
+  }, [settlement, activeTab, filteredScripts]);
 
   return (
     <Box className="fade-in">
@@ -364,15 +462,40 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape }) => {
       {/* Aggregate Cards */}
       <Grid container spacing={2} sx={{ mb: 2 }}>
         {[
-          { label: 'Stocks Held', val: filteredHoldings.length, color: '#2962ff' },
-          { label: 'Total Cost', val: `₹${totalCost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: '#06b6d4' },
-          { label: 'Market Value', val: `₹${totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: '#8b5cf6' },
-          { label: 'Overall P&L', val: `${totalPnl >= 0 ? '+' : ''}₹${Math.abs(totalPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: totalPnl >= 0 ? '#10b981' : '#ef4444' },
+          { label: 'Stocks Held', val: filteredHoldings.length, color: '#2962ff', highlight: false },
+          { label: 'Total Cost', val: `₹${totalCost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: '#06b6d4', highlight: false },
+          { label: 'Market Value', val: `₹${totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: '#8b5cf6', highlight: true },
+          { label: 'Realized Profit', val: `${totalPnl >= 0 ? '+' : ''}₹${Math.abs(totalPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: totalPnl >= 0 ? '#10b981' : '#ef4444', highlight: true },
+          {
+            label: 'Total Return %',
+            val: totalCost > 0 ? `${totalPnl >= 0 ? '+' : ''}${((totalPnl / totalCost) * 100).toFixed(2)}%` : '—',
+            color: totalPnl >= 0 ? '#10b981' : '#ef4444',
+            highlight: true
+          },
+          {
+            label: 'Avg. Holding Days',
+            val: avgHoldingDays != null ? `${avgHoldingDays}d` : '—',
+            color: '#f59e0b',
+            highlight: false
+          },
         ].map(c => (
-          <Grid item xs={6} md={3} key={c.label}>
+          <Grid size={{ xs: 6, md: 2 }} key={c.label}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 1 }}>{c.label}</Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    textTransform: 'uppercase',
+                    letterSpacing: 1,
+                    display: 'block',
+                    color: c.highlight ? '#eab308' : 'text.secondary',
+                  }}
+                >
+                  {c.highlight && (
+                    <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
+                  )}
+                  {c.label}
+                </Typography>
                 <Typography variant="h6" sx={{ fontWeight: 700, color: c.color }}>{c.val}</Typography>
               </CardContent>
             </Card>

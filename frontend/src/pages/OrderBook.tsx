@@ -42,7 +42,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
     return `₹${Math.round(Number(n)).toLocaleString('en-IN')}`;
   };
 
-  const columnDefs = [
+  const columnDefs = useMemo(() => [
     {
       field: 'broker',
       headerName: 'Broker',
@@ -183,7 +183,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
         );
       }
     }
-  ];
+  ], [onViewStock]);
 
   const handleExport = () => {
     if (gridApi) {
@@ -286,7 +286,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
           { label: 'Net Cash Flow', val: `${summary.netFlow >= 0 ? '+' : ''}${fmt(summary.netFlow)}`, color: summary.netFlow >= 0 ? '#10b981' : '#ef4444' },
           { label: '%age of Net Cash Flow', val: `${summary.netFlowPct >= 0 ? '+' : ''}${summary.netFlowPct.toFixed(2)}%`, color: summary.netFlowPct >= 0 ? '#10b981' : '#ef4444' },
         ].map(c => (
-          <Grid item xs={12} sm={6} md={3} key={c.label}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }} key={c.label}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{c.label}</Typography>

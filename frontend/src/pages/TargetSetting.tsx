@@ -607,9 +607,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
         onClose={() => { setAddDialogOpen(false); setEditTarget(null); setNewTarget({ script: '', type: 'Buy', target_price: '', category: '', comment: '', bookmark: '' }); }}
         maxWidth="sm"
         fullWidth
-        PaperProps={{
-          sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 }
-        }}
+        slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
       >
         <DialogTitle sx={{ fontWeight: 600 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -761,9 +759,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
         onClose={() => setCategoryDialogOpen(false)}
         maxWidth="xs"
         fullWidth
-        PaperProps={{
-          sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 }
-        }}
+        slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
       >
         <DialogTitle sx={{ fontWeight: 600 }}>Add New Category</DialogTitle>
         <DialogContent>

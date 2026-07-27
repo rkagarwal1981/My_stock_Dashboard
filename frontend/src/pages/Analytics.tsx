@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, FormControl, InputLabel, Select,
@@ -13,7 +13,7 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
   CartesianGrid, Cell, LineChart, Line, Legend, ReferenceLine,
-  Treemap, LabelList,
+  Treemap, LabelList, ComposedChart,
 } from 'recharts';
 
 // ─── Colour palette ───────────────────────────────────────────────────────────
@@ -49,6 +49,13 @@ const fmtShort = (v: number): string => {
   const abs = Math.abs(v);
   if (abs >= 100_000) return `${parseFloat((v / 100_000).toFixed(2))}L`;
   if (abs >= 1_000)   return `${parseFloat((v / 1_000).toFixed(1))}K`;
+  return String(Math.round(v));
+};
+
+const fmtShortNoDecimals = (v: number): string => {
+  const abs = Math.abs(v);
+  if (abs >= 100_000) return `${Math.round(v / 100_000)}L`;
+  if (abs >= 1_000)   return `${Math.round(v / 1_000)}K`;
   return String(Math.round(v));
 };
 
@@ -104,13 +111,9 @@ function remapChurnBins(rawBins: any[]): { bin_label: ChurnBin; count: number }[
     if      (/^(0[-]7|<\s*1\s*w|<\s*7\s*d|same.?week)/i.test(l))  acc['0-7d']   += cnt;
     else if (/^(8[-]15|1[-]2\s*w)/i.test(l))                        acc['8-15d']  += cnt;
     else if (/^(16[-]30|2[-]4\s*w|3[-]4\s*w)/i.test(l))            acc['16-30d'] += cnt;
-    // 1m = 31-60 days
     else if (/^(1\s*m(?:onth)?(?!\w)|31[-]60)/i.test(l))            acc['1m']     += cnt;
-    // 2m = 61-90 days
     else if (/^(2\s*m(?:onth)?(?!\w)|61[-]90)/i.test(l))            acc['2m']     += cnt;
-    // 3m = 91-120 days
     else if (/^(3\s*m(?:onth)?(?!\w)|91[-]120)/i.test(l))           acc['3m']     += cnt;
-    // Anything 121+ days (old >3mnth, >1yr, 3-6m, 6-12m labels etc.)
     else                                                              acc['>4mnth'] += cnt;
   }
 
@@ -119,14 +122,15 @@ function remapChurnBins(rawBins: any[]): { bin_label: ChurnBin; count: number }[
 
 // ─── Custom SVG label renderers ───────────────────────────────────────────────
 
-/** Renders fmtShort value above each P&L bar. Skipped for zero-value bars. */
+/** Renders fmtShortNoDecimals value above each P&L bar. Skipped for zero-value bars. */
 const PnlBarLabel = (props: any) => {
   const { x, y, width, value } = props;
   if (!value) return null;
+  const w = width || 0;
   return (
-    <text x={x + width / 2} y={y - 5} textAnchor="middle"
+    <text x={x + w / 2} y={y - 5} textAnchor="middle"
       fill="#94a3b8" fontSize={10} fontWeight={600}>
-      {fmtShort(value)}
+      {fmtShortNoDecimals(value)}
     </text>
   );
 };
@@ -154,14 +158,14 @@ const ChurnBarLabel = (props: any) => {
   );
 };
 
-/** Renders "N.N%" above each data point on the Return line chart. */
+/** Renders "N%" above each data point on the Return line chart. */
 const ReturnLineLabel = (props: any) => {
   const { x, y, value } = props;
   if (value === null || value === undefined) return null;
   return (
     <text x={x} y={y - 10} textAnchor="middle"
       fill="#06b6d4" fontSize={10} fontWeight={600}>
-      {`${Number(value).toFixed(1)}%`}
+      {`${Math.round(Number(value))}%`}
     </text>
   );
 };
@@ -264,16 +268,19 @@ const Analytics: React.FC = () => {
 
   const [churnData, setChurnData]       = useState<any>({ bins: [], total: 0 });
   const [churnLoading, setChurnLoading] = useState(true);
-  // Persist churn date range across refreshes via localStorage (YYYY-MM format)
-  const [churnFrom, setChurnFrom] = useState<string>(() => localStorage.getItem('churnFrom') || '');
-  const [churnTo,   setChurnTo]   = useState<string>(() => localStorage.getItem('churnTo')   || '');
+  
+  // Lifted global month range master filter state
+  const [monthFrom, setMonthFrom] = useState<string>(() => localStorage.getItem('monthFrom') || '');
+  const [monthTo,   setMonthTo]   = useState<string>(() => localStorage.getItem('monthTo')   || '');
 
   const [returnData, setReturnData]       = useState<any[]>([]);
   const [returnLoading, setReturnLoading] = useState(true);
-  const [returnType, setReturnType]       = useState<'weighted' | 'normal'>('weighted');
 
   const [sectorData, setSectorData]       = useState<any>({ sectors: [], total_value: 0 });
   const [sectorLoading, setSectorLoading] = useState(true);
+
+  const [effData, setEffData]             = useState<any[]>([]);
+  const [effLoading, setEffLoading]       = useState(true);
 
   // ── Widget 4 — Others drill-down state ───────────────────────────────────
   const [othersOpen, setOthersOpen]       = useState(false);
@@ -295,20 +302,20 @@ const Analytics: React.FC = () => {
     try {
       const params: any = {};
       if (brokerParam) params.broker    = brokerParam;
-      if (churnFrom) {
+      if (monthFrom) {
         // First day of the selected month
-        params.date_from = `${churnFrom}-01`;
+        params.date_from = `${monthFrom}-01`;
       }
-      if (churnTo) {
+      if (monthTo) {
         // Last day of the selected month
-        const [y, m] = churnTo.split('-').map(Number);
+        const [y, m] = monthTo.split('-').map(Number);
         const lastDay = new Date(y, m, 0).getDate();
-        params.date_to = `${churnTo}-${String(lastDay).padStart(2, '0')}`;
+        params.date_to = `${monthTo}-${String(lastDay).padStart(2, '0')}`;
       }
       const res = await axios.get('/api/analytics/churn', { params });
       setChurnData(res.data);
     } catch { setChurnData({ bins: [], total: 0 }); } finally { setChurnLoading(false); }
-  }, [brokerParam, churnFrom, churnTo]);
+  }, [brokerParam, monthFrom, monthTo]);
 
   const fetchReturn = useCallback(async () => {
     setReturnLoading(true);
@@ -326,6 +333,14 @@ const Analytics: React.FC = () => {
     } catch { setSectorData({ sectors: [], total_value: 0 }); } finally { setSectorLoading(false); }
   }, [brokerParam]);
 
+  const fetchEfficiency = useCallback(async () => {
+    setEffLoading(true);
+    try {
+      const res = await axios.get('/api/analytics/capital-efficiency', { params: { broker: brokerParam || undefined } });
+      setEffData(res.data);
+    } catch { setEffData([]); } finally { setEffLoading(false); }
+  }, [brokerParam]);
+
   // ── Effects ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -333,19 +348,106 @@ const Analytics: React.FC = () => {
     fetchChurn();
     fetchReturn();
     fetchSector();
+    fetchEfficiency();
   }, [brokerParam]);
 
-  useEffect(() => { fetchChurn(); }, [churnFrom, churnTo]);
+  useEffect(() => { fetchChurn(); }, [monthFrom, monthTo]);
 
   // ── Derived / formatted data ──────────────────────────────────────────────
 
-  const pnlFormatted = pnlData.map(d => ({
-    ...d, month: fmtMonth(d.month), lossAbs: Math.abs(d.losses),
-  }));
+  // Build sorted YYYY-MM month options from pnlData
+  const monthOptions = React.useMemo(() => {
+    const rawMonths: string[] = pnlData.length > 0
+      ? pnlData.map((d: any) => d.month as string)
+      : (() => {
+          const opts: string[] = [];
+          const now = new Date();
+          for (let i = 23; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+          }
+          return opts;
+        })();
+    const unique = [...new Set(rawMonths)].sort();
+    return unique.map(m => ({ value: m, label: fmtMonth(m) }));
+  }, [pnlData]);
 
-  const returnFormatted = returnData.map(d => ({
-    ...d, month: fmtMonth(d.month),
-  }));
+  const handleFromChange = (val: string) => {
+    setMonthFrom(val);
+    localStorage.setItem('monthFrom', val);
+  };
+  const handleToChange = (val: string) => {
+    setMonthTo(val);
+    localStorage.setItem('monthTo', val);
+  };
+
+  const filteredPnl = React.useMemo(() => {
+    return pnlData.filter(d => {
+      if (monthFrom && d.month < monthFrom) return false;
+      if (monthTo && d.month > monthTo) return false;
+      return true;
+    });
+  }, [pnlData, monthFrom, monthTo]);
+
+  const pnlFormatted = React.useMemo(() => {
+    return filteredPnl.map(d => ({
+      ...d, month: fmtMonth(d.month), lossAbs: Math.abs(d.losses),
+    }));
+  }, [filteredPnl]);
+
+  const avgGain = React.useMemo(() => {
+    const positiveGains = filteredPnl
+      .map(d => d.gains || 0)
+      .filter(g => g > 0);
+    if (positiveGains.length === 0) return 0;
+    const sum = positiveGains.reduce((a, b) => a + b, 0);
+    return sum / positiveGains.length;
+  }, [filteredPnl]);
+
+  const filteredReturn = React.useMemo(() => {
+    return returnData.filter(d => {
+      if (monthFrom && d.month < monthFrom) return false;
+      if (monthTo && d.month > monthTo) return false;
+      return true;
+    });
+  }, [returnData, monthFrom, monthTo]);
+
+  const returnFormatted = React.useMemo(() => {
+    return filteredReturn.map(d => ({
+      ...d, month: fmtMonth(d.month),
+    }));
+  }, [filteredReturn]);
+
+  const avgReturn = React.useMemo(() => {
+    const returns = filteredReturn
+      .map(d => d.normal_return)
+      .filter(v => v !== null && v !== undefined);
+    if (returns.length === 0) return 0;
+    const sum = returns.reduce((a, b) => a + b, 0);
+    return sum / returns.length;
+  }, [filteredReturn]);
+
+  // ── Efficiency data (filtered by month range) ─────────────────────────────
+  const filteredEff = useMemo(() => {
+    return effData.filter(d => {
+      if (monthFrom && d.month < monthFrom) return false;
+      if (monthTo && d.month > monthTo) return false;
+      return true;
+    });
+  }, [effData, monthFrom, monthTo]);
+
+  const effFormatted = useMemo(() => {
+    return filteredEff.map(d => ({
+      ...d, monthLabel: fmtMonth(d.month),
+    }));
+  }, [filteredEff]);
+
+
+  const avgRotationEff = useMemo(() => {
+    const vals = filteredEff.map(d => d.rotation_eff).filter(v => v !== 0);
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  }, [filteredEff]);
+
 
   /** Churn bins normalised to the canonical 7-bucket sequence */
   const churnBinsRemapped = remapChurnBins(churnData.bins || []);
@@ -380,9 +482,9 @@ const Analytics: React.FC = () => {
 
   // ── Summary KPIs ──────────────────────────────────────────────────────────
 
-  const totalGains  = pnlData.reduce((a: number, d: any) => a + (d.gains  || 0), 0);
-  const totalLosses = pnlData.reduce((a: number, d: any) => a + (d.losses || 0), 0);
-  const netPnl      = totalGains + totalLosses;
+  const totalGains  = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.gains  || 0), 0), [filteredPnl]);
+  const totalLosses = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.losses || 0), 0), [filteredPnl]);
+  const netPnl      = React.useMemo(() => totalGains + totalLosses, [totalGains, totalLosses]);
   const totalChurn  = churnData.total || 0;
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -408,14 +510,48 @@ const Analytics: React.FC = () => {
           </Typography>
         </Box>
 
-        {/* Global Broker Filter */}
-        <FormControl size="small" sx={{ minWidth: 160 }}>
-          <InputLabel>Broker</InputLabel>
-          <Select value={broker} label="Broker" onChange={e => setBroker(e.target.value)}
-            sx={{ borderRadius: 2, background: 'rgba(22,24,36,0.8)' }}>
-            {BROKERS.map(b => <MenuItem key={b} value={b}>{b}</MenuItem>)}
-          </Select>
-        </FormControl>
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Month Range From */}
+          <FormControl size="small" sx={{ minWidth: 120, '& .MuiInputBase-root': { fontSize: 12, borderRadius: 2, background: 'rgba(22,24,36,0.8)' } }}>
+            <InputLabel>From</InputLabel>
+            <Select
+              value={monthFrom}
+              label="From"
+              onChange={e => handleFromChange(e.target.value as string)}
+              displayEmpty
+            >
+              <MenuItem value=""><em style={{ color: '#64748b', fontSize: 11 }}>All time</em></MenuItem>
+              {monthOptions.map(o => (
+                <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12 }}>{o.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Month Range To */}
+          <FormControl size="small" sx={{ minWidth: 120, '& .MuiInputBase-root': { fontSize: 12, borderRadius: 2, background: 'rgba(22,24,36,0.8)' } }}>
+            <InputLabel>To</InputLabel>
+            <Select
+              value={monthTo}
+              label="To"
+              onChange={e => handleToChange(e.target.value as string)}
+              displayEmpty
+            >
+              <MenuItem value=""><em style={{ color: '#64748b', fontSize: 11 }}>All time</em></MenuItem>
+              {monthOptions.map(o => (
+                <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12 }}>{o.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Global Broker Filter */}
+          <FormControl size="small" sx={{ minWidth: 140 }}>
+            <InputLabel>Broker</InputLabel>
+            <Select value={broker} label="Broker" onChange={e => setBroker(e.target.value)}
+              sx={{ borderRadius: 2, background: 'rgba(22,24,36,0.8)' }}>
+              {BROKERS.map(b => <MenuItem key={b} value={b}>{b}</MenuItem>)}
+            </Select>
+          </FormControl>
+        </Box>
       </Box>
 
       {/* ── KPI Strip ────────────────────────────────────────────────────── */}
@@ -459,6 +595,20 @@ const Analytics: React.FC = () => {
                 <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tickFormatter={fmtShort} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 2" />
+                {avgGain > 0 && (
+                  <ReferenceLine
+                    y={avgGain}
+                    stroke="#FFFFFF"
+                    strokeDasharray="3 3"
+                    label={{
+                      value: `Avg Gain: ${fmtShort(avgGain)}`,
+                      fill: '#FFFFFF',
+                      position: 'top',
+                      fontSize: 13,
+                      fontWeight: 600
+                    }}
+                  />
+                )}
                 <Tooltip
                   {...tooltipStyle}
                   content={({ active, payload, label }) => {
@@ -492,39 +642,6 @@ const Analytics: React.FC = () => {
 
         {/* Widget 2 — Stock Churn Histogram */}
         {(() => {
-          // Build sorted MMM-YY month options from pnlData (already fetched)
-          // Fall back to last 24 months if pnlData is empty
-          const buildMonthOptions = (): { label: string; value: string }[] => {
-            const rawMonths: string[] = pnlData.length > 0
-              ? pnlData.map((d: any) => d.month as string)   // 'YYYY-MM'
-              : (() => {
-                  const opts: string[] = [];
-                  const now = new Date();
-                  for (let i = 23; i >= 0; i--) {
-                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-                    opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-                  }
-                  return opts;
-                })();
-            const unique = [...new Set(rawMonths)].sort();
-            return unique.map(m => ({ value: m, label: fmtMonth(m) }));
-          };
-          const monthOptions = buildMonthOptions();
-
-          const selectSx = {
-            minWidth: 110,
-            '& .MuiInputBase-root': { fontSize: 12, borderRadius: 2 },
-          };
-
-          const handleFromChange = (val: string) => {
-            setChurnFrom(val);
-            localStorage.setItem('churnFrom', val);
-          };
-          const handleToChange = (val: string) => {
-            setChurnTo(val);
-            localStorage.setItem('churnTo', val);
-          };
-
           // Update module-level total for ChurnBarLabel
           _churnTotal = churnData.total || 0;
 
@@ -533,38 +650,6 @@ const Analytics: React.FC = () => {
               title="Stock Churn"
               subtitle="Holding Period Distribution (LIFO)"
               icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />}
-              extra={
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <FormControl size="small" sx={selectSx}>
-                    <InputLabel>From</InputLabel>
-                    <Select
-                      value={churnFrom}
-                      label="From"
-                      onChange={e => handleFromChange(e.target.value as string)}
-                      displayEmpty
-                    >
-                      <MenuItem value=""><em style={{ color: '#64748b', fontSize: 11 }}>All time</em></MenuItem>
-                      {monthOptions.map(o => (
-                        <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12 }}>{o.label}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  <FormControl size="small" sx={selectSx}>
-                    <InputLabel>To</InputLabel>
-                    <Select
-                      value={churnTo}
-                      label="To"
-                      onChange={e => handleToChange(e.target.value as string)}
-                      displayEmpty
-                    >
-                      <MenuItem value=""><em style={{ color: '#64748b', fontSize: 11 }}>All time</em></MenuItem>
-                      {monthOptions.map(o => (
-                        <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12 }}>{o.label}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Box>
-              }
             >
               {churnLoading ? <Spinner /> : churnBinsRemapped.every(b => b.count === 0) ? (
                 <EmptyState text="No closed positions in selected date range." />
@@ -614,32 +699,13 @@ const Analytics: React.FC = () => {
       </Box>
 
       {/* ═══════════════════════════════════════════════════════════════════
-          Row 2 — Monthly Weighted Return (full width)
+          Row 2 — Monthly Portfolio Return & Rotation Efficiency Trend
       ══════════════════════════════════════════════════════════════════════ */}
-      <Box sx={{ mb: 2 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
         <ChartCard
-          title={returnType === 'weighted' ? 'Monthly Weighted Portfolio Return' : 'Monthly Normal Portfolio Return'}
-          subtitle={returnType === 'weighted' ? '30-day normalised weighted return % · mirrors Details page formula' : 'Absolute realized profit % (profit / buying price)'}
+          title="Monthly Portfolio Return"
+          subtitle="Absolute realized profit % (profit / buying price)"
           icon={<TrendingUpIcon sx={{ fontSize: 18, color: '#06b6d4' }} />}
-          extra={
-            <RadioGroup
-              row
-              value={returnType}
-              onChange={e => setReturnType(e.target.value as any)}
-              sx={{ color: '#94a3b8' }}
-            >
-              <FormControlLabel
-                value="weighted"
-                control={<Radio size="small" sx={{ color: '#2a2e43', '&.Mui-checked': { color: '#06b6d4' } }} />}
-                label={<Typography sx={{ fontSize: 11, fontWeight: 600 }}>Weighted Return</Typography>}
-              />
-              <FormControlLabel
-                value="normal"
-                control={<Radio size="small" sx={{ color: '#2a2e43', '&.Mui-checked': { color: '#06b6d4' } }} />}
-                label={<Typography sx={{ fontSize: 11, fontWeight: 600 }}>Normal Return</Typography>}
-              />
-            </RadioGroup>
-          }
         >
           {returnLoading ? <Spinner /> : returnData.length === 0 ? (
             <EmptyState text="No settlement data available for return calculation." />
@@ -651,20 +717,34 @@ const Analytics: React.FC = () => {
                 <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tickFormatter={v => `${v.toFixed(1)}%`} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 2" />
+                {avgReturn !== 0 && (
+                  <ReferenceLine
+                    y={avgReturn}
+                    stroke="#FFFFFF"
+                    strokeDasharray="3 3"
+                    label={{
+                      value: `Avg Return: ${avgReturn.toFixed(2)}%`,
+                      fill: '#FFFFFF',
+                      position: 'top',
+                      fontSize: 13,
+                      fontWeight: 600
+                    }}
+                  />
+                )}
                 <Tooltip
                   {...tooltipStyle}
-                  formatter={(v: any) => [`${Number(v).toFixed(2)}%`, returnType === 'weighted' ? 'Weighted Return' : 'Normal Return']}
+                  formatter={(v: any) => [`${Number(v).toFixed(2)}%`, 'Normal Return']}
                   labelFormatter={l => l}
                 />
                 <Line
                   type="monotone"
-                  dataKey={returnType === 'weighted' ? 'weighted_return' : 'normal_return'}
-                  name={returnType === 'weighted' ? 'Weighted Return %' : 'Normal Return %'}
+                  dataKey="normal_return"
+                  name="Normal Return %"
                   stroke="#06b6d4"
                   strokeWidth={2.5}
                   isAnimationActive={false}
                   dot={(p: any) => {
-                    const v = returnType === 'weighted' ? p.payload.weighted_return : p.payload.normal_return;
+                    const v = p.payload.normal_return;
                     return <circle key={p.key} cx={p.cx} cy={p.cy} r={4} fill={v >= 0 ? '#10b981' : '#ef4444'} stroke="none" />;
                   }}
                   activeDot={{ r: 6, fill: '#06b6d4', stroke: '#fff', strokeWidth: 2 }}
@@ -672,6 +752,156 @@ const Analytics: React.FC = () => {
                   <LabelList content={<ReturnLineLabel />} />
                 </Line>
               </LineChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+
+        {/* Widget B — Rotation Efficiency Trend */}
+        <ChartCard
+          title="Rotation Efficiency"
+          subtitle="Monthly profit / total volume %"
+          icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />}
+        >
+          {effLoading ? <Spinner /> : effFormatted.length === 0 ? (
+            <EmptyState text="No efficiency data available." />
+          ) : (
+            <ResponsiveContainer width="100%" height={290}>
+              <LineChart data={effFormatted} margin={{ top: 28, right: 20, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" vertical={false} />
+                <XAxis dataKey="monthLabel" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={v => `${v.toFixed(1)}%`} tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 2" />
+                {avgRotationEff !== 0 && (
+                  <ReferenceLine
+                    y={avgRotationEff}
+                    stroke="#FFFFFF"
+                    strokeDasharray="3 3"
+                    label={{
+                      value: `Avg: ${avgRotationEff.toFixed(2)}%`,
+                      fill: '#FFFFFF',
+                      position: 'top',
+                      fontSize: 10,
+                      fontWeight: 600
+                    }}
+                  />
+                )}
+                <Tooltip
+                  {...tooltipStyle}
+                  formatter={(v: any) => [`${Number(v).toFixed(2)}%`, 'Rotation Eff']}
+                  labelFormatter={l => l}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="rotation_eff"
+                  name="Rotation Eff %"
+                  stroke="#8b5cf6"
+                  strokeWidth={2.5}
+                  isAnimationActive={false}
+                  dot={(p: any) => {
+                    const v = p.payload.rotation_eff;
+                    return <circle key={p.key} cx={p.cx} cy={p.cy} r={3.5} fill={v >= 0 ? '#8b5cf6' : '#ef4444'} stroke="none" />;
+                  }}
+                  activeDot={{ r: 5, fill: '#8b5cf6', stroke: '#fff', strokeWidth: 2 }}
+                >
+                  <LabelList
+                    dataKey="rotation_eff"
+                    content={(props: any) => {
+                      const { x, y, value } = props;
+                      if (value === null || value === undefined) return null;
+                      return (
+                        <text x={x} y={y - 8} textAnchor="middle" fill="#8b5cf6" fontSize={9} fontWeight={600}>
+                          {`${Number(value).toFixed(1)}%`}
+                        </text>
+                      );
+                    }}
+                  />
+                </Line>
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+      </Box>
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          Row 2c — Monthly Trading Averages and Total Volumes/Profit Trend
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
+
+        {/* Widget 1: Monthly Trading Averages Trend */}
+        <ChartCard
+          title="Monthly Trading Averages"
+          subtitle="Daily average buy and sell per month"
+          icon={<TrendingUpIcon sx={{ fontSize: 18, color: '#10b981' }} />}
+        >
+          {effLoading ? <Spinner /> : effFormatted.length === 0 ? (
+            <EmptyState text="No trading averages data available." />
+          ) : (
+            <ResponsiveContainer width="100%" height={290}>
+              <BarChart data={effFormatted} margin={{ top: 20, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="30%">
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" vertical={false} />
+                <XAxis dataKey="monthLabel" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={fmtShort} tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  {...tooltipStyle}
+                  formatter={(v: any, name: any) => [
+                    `₹${Number(v).toLocaleString('en-IN')}`,
+                    name === 'avg_buy' ? 'Avg. Buy' : 'Avg. Sell'
+                  ]}
+                  labelFormatter={l => l}
+                />
+                <Legend formatter={(v) => <span style={{ color: '#94a3b8', fontSize: 11 }}>{v === 'avg_buy' ? 'Avg. Buy' : 'Avg. Sell'}</span>} />
+                <Bar dataKey="avg_buy" name="avg_buy" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={10} isAnimationActive={false}>
+                  <LabelList content={<PnlBarLabel />} />
+                </Bar>
+                <Bar dataKey="avg_sell" name="avg_sell" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={10} isAnimationActive={false}>
+                  <LabelList content={<PnlBarLabel />} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+
+        {/* Widget 2: Monthly Total Volumes and Profit Trend */}
+        <ChartCard
+          title="Monthly Total Volumes and Profit"
+          subtitle="Monthly total sell (left axis) vs realized profit (right axis)"
+          icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#f59e0b' }} />}
+        >
+          {effLoading ? <Spinner /> : effFormatted.length === 0 ? (
+            <EmptyState text="No volume or profit data available." />
+          ) : (
+            <ResponsiveContainer width="100%" height={290}>
+              <ComposedChart data={effFormatted} margin={{ top: 20, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="30%">
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" vertical={false} />
+                <XAxis dataKey="monthLabel" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="left" tickFormatter={fmtShort} tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis yAxisId="right" orientation="right" tickFormatter={fmtShort} tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  {...tooltipStyle}
+                  formatter={(v: any, name: any) => [
+                    `₹${Number(v).toLocaleString('en-IN')}`,
+                    name === 'total_sells' ? 'Total Sell' : 'Realized Profit'
+                  ]}
+                  labelFormatter={l => l}
+                />
+                <Legend formatter={(v) => <span style={{ color: '#94a3b8', fontSize: 11 }}>{v === 'total_sells' ? 'Total Sell' : 'Realized Profit'}</span>} />
+                <Bar yAxisId="left" dataKey="total_sells" name="total_sells" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={15} isAnimationActive={false}>
+                  <LabelList content={<PnlBarLabel />} />
+                </Bar>
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="realized_profit"
+                  name="realized_profit"
+                  stroke="#f59e0b"
+                  strokeWidth={2.5}
+                  isAnimationActive={false}
+                  dot={{ r: 3.5, fill: '#f59e0b', stroke: 'none' }}
+                  activeDot={{ r: 5, stroke: '#fff', strokeWidth: 2 }}
+                >
+                  <LabelList content={<PnlBarLabel />} />
+                </Line>
+              </ComposedChart>
             </ResponsiveContainer>
           )}
         </ChartCard>

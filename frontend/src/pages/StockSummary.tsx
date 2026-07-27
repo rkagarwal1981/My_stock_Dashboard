@@ -1,11 +1,11 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, Grid, Button, Divider,
   CircularProgress, Chip, Table, TableBody, TableCell, TableHead, TableRow,
   Select, MenuItem, FormControl, InputLabel, IconButton, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Radio, RadioGroup, FormControlLabel,
-  Tooltip, Autocomplete
+  Tooltip, Tabs, Tab
 } from '@mui/material';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import FlagIcon from '@mui/icons-material/Flag';
@@ -15,6 +15,11 @@ import ArrowBackIosNewIcon from '@mui/icons-material/ArrowBackIosNew';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
+import NoteAltIcon from '@mui/icons-material/NoteAlt';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import CloseIcon from '@mui/icons-material/Close';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList
 } from 'recharts';
@@ -69,6 +74,25 @@ const StockSummary: React.FC<StockSummaryProps> = ({
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
+  // ─── Bottom-left panel tab state ────────────────────────────────────────────
+  const [bottomTab, setBottomTab] = useState<0 | 1>(0); // 0 = Active Targets, 1 = Attachments & Comments
+
+  // ─── Research Notes state ────────────────────────────────────────────────────
+  const [noteText, setNoteText] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const noteSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ─── Attachments state ───────────────────────────────────────────────────────
+  const [attachments, setAttachments] = useState<{ id: number; filename: string; stored_filename: string; uploaded_at: string }[]>([]);
+  const [attachUploading, setAttachUploading] = useState(false);
+  const [attachError, setAttachError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── PDF Viewer modal state ──────────────────────────────────────────────────
+  const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
+  const [pdfViewerUrl, setPdfViewerUrl] = useState('');
+  const [pdfViewerFilename, setPdfViewerFilename] = useState('');
+
   const loadStockData = async () => {
     try {
       setLoading(true);
@@ -104,7 +128,97 @@ const StockSummary: React.FC<StockSummaryProps> = ({
     loadStockData();
     loadScripTargets();
     loadCategories();
+    loadNote();
+    loadAttachments();
   }, [scrip]);
+
+  // ─── Research Notes helpers ──────────────────────────────────────────────────
+
+  const loadNote = useCallback(async () => {
+    try {
+      const res = await axios.get(`/api/research/note/${encodeURIComponent(scrip)}`);
+      setNoteText(res.data.note_text || '');
+    } catch (e) {
+      console.error('Failed to load note:', e);
+    }
+  }, [scrip]);
+
+  const handleNoteChange = (text: string) => {
+    setNoteText(text);
+    // Debounce auto-save: 1.2 s after last keystroke
+    if (noteSaveTimer.current) clearTimeout(noteSaveTimer.current);
+    noteSaveTimer.current = setTimeout(async () => {
+      try {
+        setNoteSaving(true);
+        await axios.put(`/api/research/note/${encodeURIComponent(scrip)}`, { note_text: text });
+      } catch (e) {
+        console.error('Failed to save note:', e);
+      } finally {
+        setNoteSaving(false);
+      }
+    }, 1200);
+  };
+
+  // ─── Attachment helpers ──────────────────────────────────────────────────────
+
+  const loadAttachments = useCallback(async () => {
+    try {
+      const res = await axios.get(`/api/research/attachments/${encodeURIComponent(scrip)}`);
+      setAttachments(res.data || []);
+    } catch (e) {
+      console.error('Failed to load attachments:', e);
+    }
+  }, [scrip]);
+
+  const handleAttachUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setAttachError('Only PDF files are allowed.');
+      return;
+    }
+    if (attachments.length >= 3) {
+      setAttachError('Maximum 3 attachments allowed. Please delete one first.');
+      return;
+    }
+    setAttachError('');
+    setAttachUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await axios.post(`/api/research/attachments/${encodeURIComponent(scrip)}`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      await loadAttachments();
+    } catch (err: any) {
+      setAttachError(err.response?.data?.detail || 'Upload failed.');
+    } finally {
+      setAttachUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleAttachDelete = async (id: number) => {
+    try {
+      await axios.delete(`/api/research/attachments/${encodeURIComponent(scrip)}/${id}`);
+      setAttachments(prev => prev.filter(a => a.id !== id));
+    } catch (e) {
+      console.error('Failed to delete attachment:', e);
+    }
+  };
+
+  const handleAttachView = (storedFilename: string, filename: string) => {
+    const url = `http://localhost:8000/static/research/${encodeURIComponent(storedFilename)}`;
+    setPdfViewerUrl(url);
+    setPdfViewerFilename(filename);
+    setPdfViewerOpen(true);
+  };
+
+  const handleClosePdfViewer = () => {
+    setPdfViewerOpen(false);
+    setPdfViewerUrl('');
+    setPdfViewerFilename('');
+  };
 
   // ─── Target Dialog helpers ──────────────────────────────────────────────────
 
@@ -325,6 +439,17 @@ const StockSummary: React.FC<StockSummaryProps> = ({
     return (totalPnl / totalBuyingAmount) * 100;
   }, [data]);
 
+  // ─── Avg Holding Days: straight mean of all settled rows with valid holding_days ──
+  const avgHoldingDays = useMemo(() => {
+    if (!data?.settlement_history) return null;
+    const valid = data.settlement_history.filter(
+      (r: any) => r.holding_days != null && !isNaN(Number(r.holding_days))
+    );
+    if (valid.length === 0) return null;
+    const sum = valid.reduce((acc: number, r: any) => acc + Number(r.holding_days), 0);
+    return Math.round(sum / valid.length);
+  }, [data]);
+
   const latestTx = data?.timeline && data.timeline.length > 0 ? data.timeline[0] : null;
   const dipInfo = useMemo(() => {
     if (!latestTx || data?.ltp == null) return null;
@@ -477,6 +602,11 @@ const StockSummary: React.FC<StockSummaryProps> = ({
 
   const unrealizedPct = data?.avg_price > 0 ? ((data.ltp - data.avg_price) / data.avg_price * 100) : 0;
 
+  const isTargetLot = (t: any) => {
+    if (!data?.highlight_date || !t.date) return false;
+    return t.date.split('T')[0] === data.highlight_date.split('T')[0] && t.buy_sell === 'BUY';
+  };
+
   return (
     <Box className="fade-in">
       {/* Top Header Navigation */}
@@ -527,22 +657,37 @@ const StockSummary: React.FC<StockSummaryProps> = ({
       {/* Summary Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
-          { label: 'Current Qty', val: data.current_quantity, color: '#2962ff' },
-          { label: 'Avg Buy Price', val: fmt(data.avg_price), color: '#94a3b8' },
-          { label: 'LTP', val: fmt(data.ltp), color: '#06b6d4' },
-          { label: 'Market Value', val: fmt(data.current_value), color: '#8b5cf6' },
-          { label: 'Unrealized P&L', val: `${data.unrealized_pnl >= 0 ? '+' : ''}${fmt(data.unrealized_pnl)}`, color: data.unrealized_pnl >= 0 ? '#10b981' : '#ef4444' },
-          { label: 'Return %', val: `${unrealizedPct >= 0 ? '+' : ''}${unrealizedPct.toFixed(2)}%`, color: unrealizedPct >= 0 ? '#10b981' : '#ef4444' },
-          { label: 'Realized Profit', val: fmt(data.realized_profit), color: '#10b981' },
-          { label: 'Realized Loss', val: `-${fmt(data.realized_loss)}`, color: '#ef4444' },
-          { label: 'Total Return %', val: `${totalReturnPct >= 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%`, color: totalReturnPct >= 0 ? '#10b981' : '#ef4444' },
-          { label: 'Current PE', val: data.current_pe != null ? Number(data.current_pe).toFixed(2) : '—', color: '#f59e0b' },
-          { label: '3Y Avg PE', val: data.avg_pe_3y != null ? Number(data.avg_pe_3y).toFixed(2) : '—', color: '#ec4899' },
+          { label: 'Current Qty', val: data.current_quantity, color: '#2962ff', highlight: false },
+          { label: 'Avg Buy Price', val: fmt(data.avg_price), color: '#94a3b8', highlight: false },
+          { label: 'LTP', val: fmt(data.ltp), color: '#06b6d4', highlight: false },
+          { label: 'Market Value', val: fmt(data.current_value), color: '#8b5cf6', highlight: true },
+          { label: 'Unrealized P&L', val: `${data.unrealized_pnl >= 0 ? '+' : ''}${fmt(data.unrealized_pnl)}`, color: data.unrealized_pnl >= 0 ? '#10b981' : '#ef4444', highlight: false },
+          { label: 'Return %', val: `${unrealizedPct >= 0 ? '+' : ''}${unrealizedPct.toFixed(2)}%`, color: unrealizedPct >= 0 ? '#10b981' : '#ef4444', highlight: false },
+          { label: 'Realized Profit', val: fmt(data.realized_profit), color: '#10b981', highlight: true },
+          { label: 'Realized Loss', val: `-${fmt(data.realized_loss)}`, color: '#ef4444', highlight: false },
+          { label: 'Total Return %', val: `${totalReturnPct >= 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%`, color: totalReturnPct >= 0 ? '#10b981' : '#ef4444', highlight: true },
+          { label: 'Avg. Holding Days', val: avgHoldingDays != null ? `${avgHoldingDays}d` : '—', color: '#f59e0b', highlight: false },
+          { label: 'Current PE', val: data.current_pe != null ? Number(data.current_pe).toFixed(2) : '—', color: '#f59e0b', highlight: false },
+          { label: '3Y Avg PE', val: data.avg_pe_3y != null ? Number(data.avg_pe_3y).toFixed(2) : '—', color: '#ec4899', highlight: false },
         ].map(c => (
-          <Grid item xs={6} sm={4} md={3} key={c.label}>
+          <Grid size={{ xs: 6, sm: 4, md: 3 }} key={c.label}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.8, fontSize: 10 }}>{c.label}</Typography>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.8,
+                    fontSize: 10,
+                    display: 'block',
+                    color: c.highlight ? '#eab308' : 'text.secondary',
+                  }}
+                >
+                  {c.highlight && (
+                    <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
+                  )}
+                  {c.label}
+                </Typography>
                 <Typography variant="h6" sx={{ fontWeight: 700, color: c.color }}>{c.val}</Typography>
               </CardContent>
             </Card>
@@ -669,110 +814,357 @@ const StockSummary: React.FC<StockSummaryProps> = ({
             </CardContent>
           </Card>
 
-          {/* Active Targets Card — relocated from column 2 */}
-          <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2, flex: 1, display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', height: 'calc(100% - 48px)' }}>
+          {/* ── Bottom-Left Tabbed Card: Active Targets + Attachments & Comments ── */}
+          <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2, flex: 1, display: 'flex', flexDirection: 'column', minHeight: 300 }}>
 
-              {/* Header row with +Add Target button */}
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                <Typography variant="h6" sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <TrackChangesIcon sx={{ color: '#2962ff', fontSize: 20 }} />
-                  Active Targets
-                </Typography>
-                <Button
-                  id="add-target-btn-details"
-                  startIcon={<AddIcon />}
-                  variant="contained"
-                  size="small"
-                  onClick={openCreateDialog}
-                  sx={{ borderRadius: 2, textTransform: 'none', fontSize: 12 }}
-                >
-                  Add Target
-                </Button>
-              </Box>
-
-              {/* Target list */}
-              <Box sx={{ overflowY: 'auto', pr: 0.5, flex: 1, maxHeight: 350 }}>
-                {scripTargets.length > 0 ? scripTargets.map((t: any) => {
-                  const bookmarkColor = t.bookmark
-                    ? ({ red: '#ef4444', orange: '#f59e0b', yellow: '#eab308', green: '#10b981', blue: '#2962ff' }[t.bookmark as string] || '#64748b')
-                    : null;
-                  return (
-                    <Box key={t.id} sx={{ mb: 2, pb: 1.5, borderBottom: '1px solid #2a2e43' }}>
-                      {/* Row 1: chips + date + action icons */}
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
-                        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <Chip
-                            label={t.type}
-                            size="small"
-                            sx={{
-                              bgcolor: t.type === 'Buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                              color: t.type === 'Buy' ? '#10b981' : '#ef4444',
-                              fontWeight: 700, fontSize: 10
-                            }}
-                          />
-                          {t.category && (
-                            <Chip label={t.category} size="small" sx={{ bgcolor: 'rgba(41,98,255,0.1)', color: '#2962ff', fontSize: 10 }} />
-                          )}
-                          {bookmarkColor && <FlagIcon sx={{ fontSize: 14, color: bookmarkColor }} />}
-                          {t.triggered && <Chip label="TRIGGERED" size="small" sx={{ bgcolor: 'rgba(16,185,129,0.2)', color: '#10b981', fontSize: 9, fontWeight: 800 }} />}
+            {/* Tab header */}
+            <Box sx={{ borderBottom: '1px solid #2a2e43', px: 1, pt: 1 }}>
+              <Tabs
+                value={bottomTab}
+                onChange={(_, v) => setBottomTab(v)}
+                sx={{
+                  minHeight: 38,
+                  '& .MuiTabs-indicator': { backgroundColor: '#2962ff', height: 2.5, borderRadius: 2 },
+                }}
+              >
+                <Tab
+                  icon={<TrackChangesIcon sx={{ fontSize: 15, mr: 0.5 }} />}
+                  iconPosition="start"
+                  label="Active Targets"
+                  sx={{
+                    minHeight: 38,
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: 13,
+                    color: bottomTab === 0 ? '#f8fafc' : '#64748b',
+                    '&.Mui-selected': { color: '#f8fafc' },
+                    px: 1.5,
+                  }}
+                />
+                <Tab
+                  icon={<AttachFileIcon sx={{ fontSize: 15, mr: 0.5 }} />}
+                  iconPosition="start"
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <span>Attachments &amp; Comments</span>
+                      {attachments.length > 0 && (
+                        <Box
+                          component="span"
+                          sx={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            minWidth: 17,
+                            height: 17,
+                            px: 0.4,
+                            borderRadius: '9px',
+                            fontSize: 10,
+                            fontWeight: 800,
+                            lineHeight: 1,
+                            bgcolor: bottomTab === 1 ? '#2962ff' : 'rgba(41,98,255,0.35)',
+                            color: '#fff',
+                            letterSpacing: 0,
+                            transition: 'background 0.2s',
+                          }}
+                        >
+                          {attachments.length}
                         </Box>
-                        {/* Date + Edit + Delete */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {t.date ? new Date(t.date).toLocaleDateString('en-IN') : ''}
-                          </Typography>
-                          <Tooltip title="Edit target">
-                            <IconButton
-                              size="small"
-                              onClick={() => openEditDialog(t)}
-                              sx={{ p: 0.3, color: '#64748b', '&:hover': { color: '#2962ff' } }}
-                            >
-                              <EditIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Delete target">
-                            <IconButton
-                              size="small"
-                              color="error"
-                              onClick={() => handleDeleteTarget(t.id)}
-                              sx={{ p: 0.3 }}
-                            >
-                              <DeleteIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                        </Box>
-                      </Box>
-
-                      {/* Row 2: Target price + distance */}
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
-                          Target: {fmt(t.target_price)}
-                        </Typography>
-                        {t.distance_pct != null && (
-                          <Typography sx={{
-                            fontSize: 12, fontWeight: 600,
-                            color: Math.abs(t.distance_pct) <= 5 ? '#10b981' : Math.abs(t.distance_pct) <= 15 ? '#f59e0b' : '#ef4444'
-                          }}>
-                            {t.distance_pct >= 0 ? '+' : ''}{t.distance_pct.toFixed(2)}% away
-                          </Typography>
-                        )}
-                      </Box>
-
-                      {/* Row 3: Comment */}
-                      {t.comment && (
-                        <Typography variant="body2" sx={{ color: '#94a3b8', fontSize: 12, mt: 0.5 }}>
-                          {t.comment}
-                        </Typography>
                       )}
                     </Box>
-                  );
-                }) : (
-                  <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
-                    No targets set for this stock yet.<br />Click <strong>Add Target</strong> to create one.
-                  </Typography>
-                )}
-              </Box>
+                  }
+                  sx={{
+                    minHeight: 38,
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: 13,
+                    color: bottomTab === 1 ? '#f8fafc' : '#64748b',
+                    '&.Mui-selected': { color: '#f8fafc' },
+                    px: 1.5,
+                  }}
+                />
+              </Tabs>
+            </Box>
+
+            <CardContent sx={{ p: 2.5, display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+
+              {/* ─── TAB 0: Active Targets ────────────────────────────── */}
+              {bottomTab === 0 && (
+                <>
+                  {/* Header row with +Add Target button */}
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'text.secondary', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8 }}>
+                      {scripTargets.length} Target{scripTargets.length !== 1 ? 's' : ''} set
+                    </Typography>
+                    <Button
+                      id="add-target-btn-details"
+                      startIcon={<AddIcon />}
+                      variant="contained"
+                      size="small"
+                      onClick={openCreateDialog}
+                      sx={{ borderRadius: 2, textTransform: 'none', fontSize: 12 }}
+                    >
+                      Add Target
+                    </Button>
+                  </Box>
+
+                  {/* Target list */}
+                  <Box sx={{ overflowY: 'auto', pr: 0.5, flex: 1, maxHeight: 380 }}>
+                    {scripTargets.length > 0 ? scripTargets.map((t: any) => {
+                      const bookmarkColor = t.bookmark
+                        ? ({ red: '#ef4444', orange: '#f59e0b', yellow: '#eab308', green: '#10b981', blue: '#2962ff' }[t.bookmark as string] || '#64748b')
+                        : null;
+                      return (
+                        <Box key={t.id} sx={{ mb: 2, pb: 1.5, borderBottom: '1px solid #2a2e43' }}>
+                          {/* Row 1: chips + date + action icons */}
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <Chip
+                                label={t.type}
+                                size="small"
+                                sx={{
+                                  bgcolor: t.type === 'Buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                                  color: t.type === 'Buy' ? '#10b981' : '#ef4444',
+                                  fontWeight: 700, fontSize: 10
+                                }}
+                              />
+                              {t.category && (
+                                <Chip label={t.category} size="small" sx={{ bgcolor: 'rgba(41,98,255,0.1)', color: '#2962ff', fontSize: 10 }} />
+                              )}
+                              {bookmarkColor && <FlagIcon sx={{ fontSize: 14, color: bookmarkColor }} />}
+                              {t.triggered && <Chip label="TRIGGERED" size="small" sx={{ bgcolor: 'rgba(16,185,129,0.2)', color: '#10b981', fontSize: 9, fontWeight: 800 }} />}
+                            </Box>
+                            {/* Date + Edit + Delete */}
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                              <Typography variant="caption" color="text.secondary">
+                                {t.date ? new Date(t.date).toLocaleDateString('en-IN') : ''}
+                              </Typography>
+                              <Tooltip title="Edit target">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => openEditDialog(t)}
+                                  sx={{ p: 0.3, color: '#64748b', '&:hover': { color: '#2962ff' } }}
+                                >
+                                  <EditIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Delete target">
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => handleDeleteTarget(t.id)}
+                                  sx={{ p: 0.3 }}
+                                >
+                                  <DeleteIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          </Box>
+
+                          {/* Row 2: Target price + distance */}
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                            <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#f8fafc' }}>
+                              Target: {fmt(t.target_price)}
+                            </Typography>
+                            {t.distance_pct != null && (
+                              <Typography sx={{
+                                fontSize: 12, fontWeight: 600,
+                                color: Math.abs(t.distance_pct) <= 5 ? '#10b981' : Math.abs(t.distance_pct) <= 15 ? '#f59e0b' : '#ef4444'
+                              }}>
+                                {t.distance_pct >= 0 ? '+' : ''}{t.distance_pct.toFixed(2)}% away
+                              </Typography>
+                            )}
+                          </Box>
+
+                          {/* Row 3: Comment */}
+                          {t.comment && (
+                            <Typography variant="body2" sx={{ color: '#94a3b8', fontSize: 12, mt: 0.5 }}>
+                              {t.comment}
+                            </Typography>
+                          )}
+                        </Box>
+                      );
+                    }) : (
+                      <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 4 }}>
+                        No targets set for this stock yet.<br />Click <strong>Add Target</strong> to create one.
+                      </Typography>
+                    )}
+                  </Box>
+                </>
+              )}
+
+              {/* ─── TAB 1: Attachments & Comments ───────────────────── */}
+              {bottomTab === 1 && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, flex: 1, overflowY: 'auto' }}>
+
+                  {/* PDF Attachment Manager */}
+                  <Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <PictureAsPdfIcon sx={{ color: '#ef4444', fontSize: 18 }} />
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: 13 }}>
+                          Research Papers
+                        </Typography>
+                        <Chip
+                          label={`${attachments.length}/3`}
+                          size="small"
+                          sx={{
+                            bgcolor: attachments.length >= 3 ? 'rgba(239,68,68,0.15)' : 'rgba(41,98,255,0.12)',
+                            color: attachments.length >= 3 ? '#ef4444' : '#2962ff',
+                            fontWeight: 700, fontSize: 10
+                          }}
+                        />
+                      </Box>
+                      {/* Hidden file input */}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        style={{ display: 'none' }}
+                        onChange={handleAttachUpload}
+                      />
+                      <Tooltip title={attachments.length >= 3 ? 'Max 3 attachments reached' : 'Browse PDF file'}>
+                        <span>
+                          <Button
+                            size="small"
+                            startIcon={attachUploading ? <CircularProgress size={12} /> : <AttachFileIcon />}
+                            variant="outlined"
+                            disabled={attachments.length >= 3 || attachUploading}
+                            onClick={() => fileInputRef.current?.click()}
+                            sx={{
+                              borderRadius: 2, textTransform: 'none', fontSize: 12,
+                              borderColor: '#2a2e43', color: '#94a3b8',
+                              '&:hover': { borderColor: '#2962ff', color: '#2962ff' }
+                            }}
+                          >
+                            {attachUploading ? 'Uploading…' : 'Attach PDF'}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </Box>
+
+                    {/* Error message */}
+                    {attachError && (
+                      <Typography variant="caption" sx={{ color: '#ef4444', mb: 1, display: 'block' }}>
+                        {attachError}
+                      </Typography>
+                    )}
+
+                    {/* Attachment list */}
+                    {attachments.length === 0 ? (
+                      <Box sx={{
+                        border: '1.5px dashed #2a2e43',
+                        borderRadius: 2,
+                        py: 3,
+                        textAlign: 'center'
+                      }}>
+                        <PictureAsPdfIcon sx={{ color: '#2a2e43', fontSize: 32, mb: 0.5 }} />
+                        <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
+                          No PDFs attached yet.<br />Up to 3 research papers allowed.
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        {attachments.map((a) => (
+                          <Box
+                            key={a.id}
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 1.5,
+                              p: 1.2,
+                              borderRadius: 1.5,
+                              border: '1px solid #2a2e43',
+                              background: 'rgba(41,98,255,0.04)',
+                              transition: 'background 0.2s',
+                              '&:hover': { background: 'rgba(41,98,255,0.1)' }
+                            }}
+                          >
+                            <PictureAsPdfIcon sx={{ color: '#ef4444', fontSize: 20, flexShrink: 0 }} />
+                            <Box sx={{ flex: 1, overflow: 'hidden' }}>
+                              <Typography sx={{
+                                fontSize: 12.5, fontWeight: 600, color: '#f8fafc',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                              }}>
+                                {a.filename}
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10 }}>
+                                {new Date(a.uploaded_at).toLocaleDateString('en-IN')}
+                              </Typography>
+                            </Box>
+                            <Tooltip title="View PDF">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleAttachView(a.stored_filename, a.filename)}
+                                sx={{ color: '#64748b', '&:hover': { color: '#2962ff' }, p: 0.4 }}
+                              >
+                                <VisibilityIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Remove attachment">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => handleAttachDelete(a.id)}
+                                sx={{ p: 0.4 }}
+                              >
+                                <DeleteIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                            </Tooltip>
+                          </Box>
+                        ))}
+                      </Box>
+                    )}
+                  </Box>
+
+                  <Divider sx={{ borderColor: '#2a2e43' }} />
+
+                  {/* Research Notes */}
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <NoteAltIcon sx={{ color: '#f59e0b', fontSize: 18 }} />
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: 13 }}>
+                          Research Notes
+                        </Typography>
+                      </Box>
+                      {noteSaving && (
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <CircularProgress size={10} sx={{ color: '#64748b' }} />
+                          <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10 }}>Saving…</Typography>
+                        </Box>
+                      )}
+                      {!noteSaving && noteText && (
+                        <Typography variant="caption" sx={{ color: '#10b981', fontSize: 10 }}>✓ Saved</Typography>
+                      )}
+                    </Box>
+                    <TextField
+                      multiline
+                      fullWidth
+                      minRows={8}
+                      maxRows={16}
+                      placeholder={`Write your research notes for ${scrip} here…\n\nCapture fundamentals, technicals, catalysts, or any insights that inform your investment thesis.`}
+                      value={noteText}
+                      onChange={(e) => handleNoteChange(e.target.value)}
+                      sx={{
+                        flex: 1,
+                        '& .MuiOutlinedInput-root': {
+                          background: 'rgba(15,17,28,0.6)',
+                          borderRadius: 2,
+                          fontSize: 13,
+                          lineHeight: 1.65,
+                          color: '#e2e8f0',
+                          '& fieldset': { borderColor: '#2a2e43' },
+                          '&:hover fieldset': { borderColor: '#3d4460' },
+                          '&.Mui-focused fieldset': { borderColor: '#2962ff' },
+                        },
+                        '& .MuiInputBase-input::placeholder': { color: '#3d4460', fontSize: 12.5 },
+                      }}
+                    />
+                  </Box>
+
+                </Box>
+              )}
+
             </CardContent>
           </Card>
         </Box>
@@ -797,9 +1189,20 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(data.timeline ?? []).map((t: any, i: number) => (
-                    <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                      <TableCell sx={{ fontSize: 12 }}>{fmtDate(t.date)}</TableCell>
+                  {(data.timeline ?? []).map((t: any, i: number) => {
+                    const isTarget = isTargetLot(t);
+                    return (
+                      <TableRow 
+                        key={i} 
+                        sx={{ 
+                          bgcolor: isTarget ? 'rgba(234,179,8,0.15)' : 'transparent',
+                          borderLeft: isTarget ? '4px solid #eab308' : 'none',
+                          '&:hover': { bgcolor: isTarget ? 'rgba(234,179,8,0.25)' : 'rgba(41,98,255,0.05)' } 
+                        }}
+                      >
+                        <TableCell sx={{ fontSize: 12, fontWeight: isTarget ? 700 : 500, color: isTarget ? '#eab308' : 'inherit' }}>
+                          {fmtDate(t.date)}
+                        </TableCell>
                       <TableCell sx={{ fontSize: 12 }}>{t.broker}</TableCell>
                       <TableCell>
                         <Chip label={t.buy_sell} size="small"
@@ -809,7 +1212,8 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                       <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.price))}</TableCell>
                       <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.quantity * t.price))}</TableCell>
                     </TableRow>
-                  ))}
+                  );
+                })}
                 </TableBody>
               </Table>
               {(data.timeline ?? []).length === 0 && (
@@ -883,9 +1287,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
         onClose={closeTargetDialog}
         maxWidth="sm"
         fullWidth
-        PaperProps={{
-          sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 }
-        }}
+        slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
       >
         <DialogTitle sx={{ fontWeight: 600 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -1007,9 +1409,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
         onClose={() => setCategoryDialogOpen(false)}
         maxWidth="xs"
         fullWidth
-        PaperProps={{
-          sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 }
-        }}
+        slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
       >
         <DialogTitle sx={{ fontWeight: 600 }}>Add New Category</DialogTitle>
         <DialogContent>
@@ -1036,6 +1436,97 @@ const StockSummary: React.FC<StockSummaryProps> = ({
           </Button>
         </DialogActions>
       </Dialog>
+      {/* ════════════════════════════════════════════════════════════════════════
+          PDF Viewer Modal — inline iframe preview of stored research PDFs
+      ════════════════════════════════════════════════════════════════════════ */}
+      {pdfViewerOpen && (
+        <Box
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1400,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: 'rgba(8, 9, 16, 0.75)',
+            backdropFilter: 'blur(4px)',
+          }}
+          onClick={handleClosePdfViewer}
+        >
+          {/* Floating A4-Sized Container */}
+          <Box
+            sx={{
+              position: 'relative',
+              width: '100%',
+              maxWidth: '794px', // standard A4 width
+              height: '90vh',
+              maxHeight: '1123px', // standard A4 aspect height limits
+              bgcolor: '#161824',
+              border: '1px solid #2a2e43',
+              borderRadius: 3,
+              boxShadow: '0px 10px 30px rgba(0,0,0,0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()} // prevent click propagation from closing the modal
+          >
+            {/* Modal Header */}
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                px: 3,
+                py: 1.5,
+                bgcolor: '#161824',
+                borderBottom: '1px solid #2a2e43',
+                flexShrink: 0,
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <PictureAsPdfIcon sx={{ color: '#ef4444', fontSize: 22 }} />
+                <Typography sx={{ fontWeight: 700, fontSize: 15, color: '#f8fafc' }}>
+                  {pdfViewerFilename}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 11 }}>
+                  {scrip}
+                </Typography>
+              </Box>
+              <Tooltip title="Close PDF viewer">
+                <IconButton
+                  id="close-pdf-viewer-btn"
+                  onClick={handleClosePdfViewer}
+                  sx={{
+                    color: '#94a3b8',
+                    '&:hover': { color: '#f8fafc', bgcolor: 'rgba(239,68,68,0.12)' },
+                    border: '1px solid #2a2e43',
+                    borderRadius: 1.5,
+                    p: 0.7,
+                  }}
+                >
+                  <CloseIcon sx={{ fontSize: 20 }} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+
+            {/* PDF iframe - serves locally via mounted FastAPI static folder */}
+            <Box sx={{ flex: 1, overflow: 'hidden', p: 1, bgcolor: '#1e222d' }}>
+              <iframe
+                src={pdfViewerUrl}
+                width="100%"
+                height="100%"
+                style={{
+                  border: 'none',
+                  borderRadius: 6,
+                  background: '#fff',
+                }}
+                title={pdfViewerFilename}
+              />
+            </Box>
+          </Box>
+        </Box>
+      )}
     </Box>
   );
 };

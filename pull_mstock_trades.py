@@ -96,12 +96,8 @@ def update_cache(broker: str):
 
 def get_current_fy_dates():
     now = datetime.now()
-    if now.month >= 4:
-        start_year = now.year
-    else:
-        start_year = now.year - 1
-    # Format: YYYY-MM-DD (MStock API parses YYYY-MM-DD correctly, DD-MM-YYYY causes incorrect month/day parsing)
-    from_date = f"{start_year}-04-01"
+    # Pull from Jan 1st of current year (2026) onwards to align with historical 2025 data ending Dec 2025
+    from_date = f"{now.year}-01-01"
     to_date = now.strftime("%Y-%m-%d")
     return from_date, to_date
 

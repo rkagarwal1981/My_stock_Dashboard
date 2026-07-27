@@ -103,8 +103,8 @@ export const AddTargetModal: React.FC<AddTargetModalProps> = ({
       onClose={onClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{
-        sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 }
+      slotProps={{
+        paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } }
       }}
     >
       <DialogTitle sx={{ fontWeight: 600 }}>

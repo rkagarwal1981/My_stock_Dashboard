@@ -9,4 +9,6 @@ from models.comment import StockComment
 from models.target import TargetSetting
 from models.target_category import TargetCategory
 from models.sector_override import SectorAllocationOverride
+from models.watchlist import WatchlistAction, WatchlistManualScript
+from models.stock_research import StockNote, StockAttachment
 

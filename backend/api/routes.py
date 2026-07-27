@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from services.database import get_db, engine
 from services.lifo_engine import compute_lifo_settlement, compute_fifo_settlement, calculate_xirr
-from services.importer import scan_and_import_directory, import_file, SCAN_DIR, run_trade_pullers, recalculate_and_sync_holdings
+from services.importer import scan_and_import_directory, import_file, SCAN_DIR, run_trade_pullers, reconcile_broker_holdings_snapshots
 from services.market_data import fetch_live_prices, fetch_pe_info
 from models.user import User
 from models.credentials import BrokerCredentials
@@ -24,7 +24,10 @@ from models.target import TargetSetting
 from models.target_category import TargetCategory
 from models.sector_override import SectorAllocationOverride
 from models.watchlist import WatchlistAction, WatchlistManualScript
+from models.stock_research import StockNote, StockAttachment
 from services.mutual_fund_engine import MutualFundEngine
+import uuid
+from fastapi.responses import FileResponse
 
 from api.auth import (
     get_current_user,
@@ -377,7 +380,7 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
     holdings = db.query(Holding).all()
     if not holdings:
         try:
-            recalculate_and_sync_holdings(db)
+            reconcile_broker_holdings_snapshots(db)
             holdings = db.query(Holding).all()
         except Exception as e:
             print(f"Error auto-syncing holdings on get_holdings: {e}")
@@ -1984,6 +1987,22 @@ def analytics_sector_allocation(
     return {"sectors": result, "total_value": round(total_value, 2)}
 
 
+@router.get("/analytics/capital-efficiency")
+def analytics_capital_efficiency(
+    broker: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Historical Capital Deployed & Efficiency Metrics.
+    Returns monthly data from Jan 2025 to current month:
+    [{month, opening_balance, total_buys, total_sells, realized_profit,
+      capital_deployed, trading_eff, rotation_eff, capital_return}]
+    """
+    from services.capital_analytics import compute_capital_efficiency
+    return compute_capital_efficiency(db, broker)
+
+
 @router.get("/analytics/tax-drag")
 def analytics_tax_drag(
     broker: Optional[str] = None,
@@ -2244,6 +2263,7 @@ def get_watchlist_section1(
         is_manual = script in manual_scripts
         
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
+        change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         if ltp is None or ltp == 0:
             ltp = h.avg_price
             
@@ -2309,6 +2329,7 @@ def get_watchlist_section1(
                 "buying_date": buying_date,
                 "script": script,
                 "buying_price": buying_price,
+                "change_in_ltp_pct": change_pct,
                 "ltp": ltp,
                 "gain_pct": gain,
                 "quantity": remaining_qty,
@@ -2319,6 +2340,7 @@ def get_watchlist_section1(
                 "is_partial": is_partial
             })
             
+    results.sort(key=lambda x: x["gain_pct"], reverse=True)
     return results
 
 @router.get("/watchlist/section2")
@@ -2519,3 +2541,318 @@ def get_watchlist_section3(
         "bottom_movers": bottom_n
     }
 
+
+# --- Section 4: Re-entry Opportunities ---
+
+@router.get("/watchlist/section4")
+def get_watchlist_section4(
+    N: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Surfaces stocks that were completely exited within the last 6 months
+    and are NOT currently in live holdings — ranked by largest price drop
+    from the exit (sell) price, so cheap re-entry candidates bubble to the top.
+
+    Algorithm:
+    1. Query all SELL transactions in the past 6 months.
+    2. Build a set of unique scripts that had sells in this window.
+    3. Exclude any script that is currently in live holdings (still open position).
+    4. For each fully-exited script, find the most-recent sell transaction in the
+       window → that gives us the "exit price" and "exit date".
+    5. Fetch live prices and compute drop_from_exit_pct = (LTP - exit_price) / exit_price * 100.
+       A large negative value = stock has dropped a lot since we exited → potential re-entry.
+    6. Sort ascending by drop_from_exit_pct (most negative first) and return top N.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func as sqlfunc
+
+    six_months_ago = datetime.now() - timedelta(days=182)
+
+    # Step 1 & 2: SELL transactions in the last 6 months → unique scripts
+    sell_txs = (
+        db.query(Transaction)
+        .filter(
+            Transaction.buy_sell.in_(["SELL", "Sell", "sell"]),
+            Transaction.transaction_date >= six_months_ago
+        )
+        .order_by(Transaction.script, Transaction.transaction_date.desc())
+        .all()
+    )
+
+    if not sell_txs:
+        return {"reentry_candidates": []}
+
+    # Step 3: Build set of scripts currently in live holdings
+    live_holding_scripts = {h.script for h in db.query(Holding).all()}
+
+    # Step 4: For each sold script NOT in live holdings, pick most-recent sell tx
+    # Group by (script) → keep latest sell tx per script
+    seen_scripts: set = set()
+    candidate_txs: list = []
+    for tx in sell_txs:
+        script = tx.script
+        if script in seen_scripts:
+            continue
+        seen_scripts.add(script)
+        # Exclude if still actively held
+        if script in live_holding_scripts:
+            continue
+        candidate_txs.append(tx)
+
+    if not candidate_txs:
+        return {"reentry_candidates": []}
+
+    # Step 5: Fetch live prices for all candidate scripts
+    scrip_list = [tx.script for tx in candidate_txs]
+    live_prices: dict = {}
+    try:
+        live_prices = fetch_live_prices(scrip_list)
+    except Exception as e:
+        print(f"Error fetching live prices for section4 watchlist: {e}")
+
+    results = []
+    for tx in candidate_txs:
+        script = tx.script
+        exit_price = tx.price
+        exit_date = tx.transaction_date
+        broker = tx.broker
+
+        if not exit_price or exit_price <= 0:
+            continue
+
+        ltp = None
+        change_pct = 0.0
+        if script in live_prices and live_prices[script]["price"] > 0:
+            ltp = live_prices[script]["price"]
+            change_pct = live_prices[script].get("change_pct", 0.0)
+
+        if ltp is None or ltp <= 0:
+            continue  # skip if no live price available
+
+        drop_from_exit_pct = ((ltp - exit_price) / exit_price) * 100
+
+        # Days since exit
+        days_since_exit = None
+        if exit_date:
+            days_since_exit = (datetime.now().date() - exit_date.date()).days
+
+        # Action check (24h expiry)
+        action_record = db.query(WatchlistAction).filter(
+            WatchlistAction.script == script,
+            WatchlistAction.section == "section4"
+        ).first()
+
+        action_checked = False
+        if action_record:
+            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+            if time_diff.total_seconds() < 24 * 60 * 60:
+                action_checked = True
+            else:
+                db.delete(action_record)
+                db.commit()
+
+        results.append({
+            "script": script,
+            "broker": broker,
+            "exit_price": exit_price,
+            "exit_date": exit_date,
+            "days_since_exit": days_since_exit,
+            "ltp": ltp,
+            "change_in_ltp_pct": change_pct,
+            "drop_from_exit_pct": drop_from_exit_pct,
+            "action_checked": action_checked,
+        })
+
+    # Step 6: Sort by drop_from_exit_pct ascending (most negative = biggest drop = best re-entry)
+    results.sort(key=lambda x: x["drop_from_exit_pct"])
+
+    return {"reentry_candidates": results[:N]}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Research Attachments & Notes  (Stock Detail Panel)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Directory where uploaded PDFs are stored (relative to the backend working dir)
+_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads", "stock_research")
+os.makedirs(_UPLOAD_DIR, exist_ok=True)
+
+MAX_ATTACHMENTS = 3
+
+
+class NoteUpsertRequest(BaseModel):
+    note_text: str
+
+
+# ── Bulk research status (used by Holdings grid for paperclip indicator) ───────
+
+@router.get("/research/status")
+def get_research_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a dict mapping each script that has research data to its status:
+      { "SCRIPT": { "attachment_count": int, "has_note": bool } }
+    Scripts with no research data at all are omitted to keep the payload small.
+    """
+    # Scripts with at least one attachment
+    attachments = db.query(StockAttachment.script, StockAttachment.id).all()
+    attachment_map: dict[str, int] = {}
+    for a_script, _ in attachments:
+        attachment_map[a_script] = attachment_map.get(a_script, 0) + 1
+
+    # Scripts with a non-empty note
+    notes = db.query(StockNote.script, StockNote.note_text).filter(
+        StockNote.note_text != None,
+        StockNote.note_text != ""
+    ).all()
+    note_scripts: set[str] = {n_script for n_script, n_text in notes if n_text and n_text.strip()}
+
+    # Merge both sets
+    all_scripts = set(attachment_map.keys()) | note_scripts
+    result = {
+        s: {
+            "attachment_count": attachment_map.get(s, 0),
+            "has_note": s in note_scripts,
+        }
+        for s in all_scripts
+    }
+    return result
+
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+
+@router.get("/research/note/{script}")
+def get_note(
+    script: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return the persisted research note for a stock."""
+    note = db.query(StockNote).filter(StockNote.script == script).first()
+    return {"script": script, "note_text": note.note_text if note else ""}
+
+
+@router.put("/research/note/{script}")
+def upsert_note(
+    script: str,
+    req: NoteUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create or update the research note for a stock."""
+    note = db.query(StockNote).filter(StockNote.script == script).first()
+    if note:
+        note.note_text = req.note_text
+    else:
+        note = StockNote(script=script, note_text=req.note_text)
+        db.add(note)
+    db.commit()
+    return {"message": "Note saved.", "script": script}
+
+
+# ── Attachments ───────────────────────────────────────────────────────────────
+
+@router.get("/research/attachments/{script}")
+def list_attachments(
+    script: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all PDF attachments for a stock."""
+    attachments = db.query(StockAttachment).filter(StockAttachment.script == script).all()
+    return [
+        {"id": a.id, "filename": a.filename, "stored_filename": a.stored_filename, "uploaded_at": a.uploaded_at}
+        for a in attachments
+    ]
+
+
+@router.post("/research/attachments/{script}")
+def upload_attachment(
+    script: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upload a PDF research paper for a stock (max 3)."""
+    existing = db.query(StockAttachment).filter(StockAttachment.script == script).count()
+    if existing >= MAX_ATTACHMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum of {MAX_ATTACHMENTS} attachments allowed per stock. Please remove one first."
+        )
+
+    # Validate PDF
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+
+    # Save file with a unique stored name to avoid collisions
+    stored_name = f"{uuid.uuid4().hex}_{file.filename}"
+    dest_path = os.path.join(_UPLOAD_DIR, stored_name)
+    with open(dest_path, "wb") as f_out:
+        f_out.write(file.file.read())
+
+    attachment = StockAttachment(
+        script=script,
+        filename=file.filename,
+        stored_filename=stored_name
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+
+    return {"id": attachment.id, "filename": attachment.filename, "uploaded_at": attachment.uploaded_at}
+
+
+@router.get("/research/attachments/{script}/{attachment_id}/download")
+def download_attachment(
+    script: str,
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Stream-download a PDF attachment."""
+    attachment = db.query(StockAttachment).filter(
+        StockAttachment.id == attachment_id,
+        StockAttachment.script == script
+    ).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    file_path = os.path.join(_UPLOAD_DIR, attachment.stored_filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found on disk.")
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=attachment.filename
+    )
+
+
+@router.delete("/research/attachments/{script}/{attachment_id}")
+def delete_attachment(
+    script: str,
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a PDF attachment by ID."""
+    attachment = db.query(StockAttachment).filter(
+        StockAttachment.id == attachment_id,
+        StockAttachment.script == script
+    ).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    # Remove from disk
+    file_path = os.path.join(_UPLOAD_DIR, attachment.stored_filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    db.delete(attachment)
+    db.commit()
+    return {"message": "Attachment deleted."}

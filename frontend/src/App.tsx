@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useDispatch } from 'react-redux';
 import { useAppSelector } from './store';
 import axios from 'axios';
@@ -28,6 +28,7 @@ import StockSummary from './pages/StockSummary';
 import OrderBook from './pages/OrderBook';
 import MutualFunds from './pages/MutualFunds';
 import TargetSetting from './pages/TargetSetting';
+import Watchlist from './pages/Watchlist';
 
 // Material UI components
 import {
@@ -72,6 +73,7 @@ import PersonIcon from '@mui/icons-material/Person';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
+import StarIcon from '@mui/icons-material/Star';
 
 const drawerWidth = 260;
 
@@ -193,9 +195,9 @@ function App() {
     }
   };
 
-  const showToast = (message: string, severity: 'success' | 'error' | 'info' = 'info') => {
+  const showToast = useCallback((message: string, severity: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ open: true, message, severity });
-  };
+  }, []);
 
   // Trigger manual transaction folder scan
   const handleScanDirectory = async () => {
@@ -323,10 +325,10 @@ function App() {
   }, [isAuthenticated]);
 
   // Navigate to Stock Summary detailed view
-  const handleViewStock = (scrip: string) => {
+  const handleViewStock = useCallback((scrip: string) => {
     setSelectedStock(scrip);
     setActiveTab('stock-summary');
-  };
+  }, []);
 
   if (!isAuthenticated) {
     return (
@@ -342,7 +344,9 @@ function App() {
       case 'dashboard':
         return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
       case 'holdings':
-        return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} />;
+        return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} showToast={showToast} />;
+      case 'watchlist':
+        return <Watchlist onViewStock={handleViewStock} showToast={showToast} />;
       case 'targets':
         return <TargetSetting onViewStock={handleViewStock} />;
       case 'order-book':
@@ -364,7 +368,7 @@ function App() {
           <StockSummary 
             scrip={selectedStock} 
             onBack={() => setActiveTab('holdings')} 
-            scripList={allHoldings.map((h: any) => h.script)}
+            scripList={allHoldings.map((h: any) => h.script).sort((a: string, b: string) => a.localeCompare(b))}
             onSelectScrip={handleViewStock}
             onRefreshData={() => fetchAllData(false)}
           />
@@ -464,6 +468,7 @@ function App() {
               { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
               { id: 'holdings', text: 'Live Holdings', icon: <AccountBalanceWalletIcon /> },
               { id: 'targets', text: 'Target Setting', icon: <TrackChangesIcon /> },
+              { id: 'watchlist', text: 'Watchlist', icon: <StarIcon /> },
               { id: 'order-book', text: 'Order Book', icon: <AssignmentIcon /> },
               { id: 'transactions', text: 'Consolidated Portfolio', icon: <ListAltIcon /> },
               { id: 'lifo', text: 'LIFO Settlement', icon: <SwapHorizIcon /> },

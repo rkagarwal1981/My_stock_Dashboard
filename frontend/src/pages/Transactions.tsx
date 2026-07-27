@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useDispatch } from 'react-redux';
 import axios from 'axios';
 import { useAppSelector } from '../store';
@@ -40,7 +40,7 @@ const Transactions: React.FC<TransactionsProps> = ({ onViewStock }) => {
     }
   };
 
-  const txColumns = [
+  const txColumns = useMemo(() => [
     { field: 'transaction_date', headerName: 'Date', flex: 1.2, minWidth: 140,
       valueFormatter: (p: any) => p.value ? new Date(p.value).toLocaleDateString('en-IN') : '' },
     { field: 'broker', headerName: 'Broker', flex: 0.8, minWidth: 90 },
@@ -63,10 +63,10 @@ const Transactions: React.FC<TransactionsProps> = ({ onViewStock }) => {
     { field: 'net_amount', headerName: 'Net Amount', flex: 1.2, minWidth: 120, valueFormatter: (p: any) => `₹${Number(p.value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` },
     { field: 'exchange', headerName: 'Exchange', flex: 0.8, minWidth: 90 },
     { field: 'order_number', headerName: 'Order No.', flex: 1, minWidth: 110 },
-  ];
+  ], [onViewStock]);
 
-  const histColumns = [
-    { field: 'filename', headerName: 'File Name', flex: 2, minWidth: 200 },
+  const histColumns = useMemo(() => [
+    { field: 'filename', headerName: 'File Name', flex: 2, minWidth: 200, },
     { field: 'broker', headerName: 'Broker', flex: 1, minWidth: 100 },
     { field: 'import_date', headerName: 'Imported At', flex: 1.5, minWidth: 160,
       valueFormatter: (p: any) => p.value ? new Date(p.value).toLocaleString('en-IN') : '' },
@@ -78,7 +78,7 @@ const Transactions: React.FC<TransactionsProps> = ({ onViewStock }) => {
           sx={{ bgcolor: p.value === 'SUCCESS' ? '#10b98122' : '#ef444422', color: p.value === 'SUCCESS' ? '#10b981' : '#ef4444', fontSize: 11 }} />
       )
     }
-  ];
+  ], []);
 
   return (
     <Box className="fade-in">
@@ -106,7 +106,7 @@ const Transactions: React.FC<TransactionsProps> = ({ onViewStock }) => {
           { label: 'SELL Orders', val: transactions.filter((t: any) => t.buy_sell === 'SELL').length },
           { label: 'Files Imported', val: importHistory.length },
         ].map(c => (
-          <Grid item xs={6} md={3} key={c.label}>
+          <Grid size={{ xs: 6, md: 3 }} key={c.label}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 1 }}>{c.label}</Typography>

@@ -3,6 +3,9 @@ __pycache__/
 .vscode/
 *.txt
 !requirements.txt
+*credentials.txt
+.env
+.evn
 *.csv
 *.xlsx
 *.json
@@ -16,5 +19,6 @@ __pycache__/
 !frontend/vercel.json
 *.key
 *.db
+*.log
 
 

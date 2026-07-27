@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAppSelector } from '../store';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -47,7 +47,7 @@ const LIFOSettlement: React.FC<LIFOSettlementProps> = ({ onViewStock }) => {
     return { bg: '#ef444422', fg: '#ef4444' };
   };
 
-  const columns = [
+  const columns = useMemo(() => [
     { field: 'scrip', headerName: 'Script', flex: 1.5, minWidth: 140, pinned: 'left',
       cellRenderer: (p: any) => (
         <span style={{ cursor: 'pointer', color: '#2962ff', fontWeight: 700 }} onClick={() => onViewStock(p.value)}>
@@ -84,7 +84,7 @@ const LIFOSettlement: React.FC<LIFOSettlementProps> = ({ onViewStock }) => {
         return { backgroundColor: bg };
       }
     },
-  ];
+  ], [onViewStock]);
 
   const fullySett = settlement.filter((r: any) => r.comment === 'Fully Settled').length;
   const partiallySett = settlement.filter((r: any) => r.comment === 'Partially Settled').length;
@@ -117,7 +117,7 @@ const LIFOSettlement: React.FC<LIFOSettlementProps> = ({ onViewStock }) => {
           { label: 'Unsettled', val: unsettled, color: '#ef4444' },
           { label: 'Realized P&L', val: `${realizedPnl >= 0 ? '+' : ''}₹${Math.abs(realizedPnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`, color: realizedPnl >= 0 ? '#10b981' : '#ef4444' },
         ].map(c => (
-          <Grid item xs={6} md={3} key={c.label}>
+          <Grid size={{ xs: 6, md: 3 }} key={c.label}>
             <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
               <CardContent sx={{ p: 2 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 1 }}>{c.label}</Typography>
