@@ -356,7 +356,9 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
                 tx.script.upper() if tx.script else "",
                 tx.buy_sell.upper() if tx.buy_sell else "",
                 float(tx.quantity) if tx.quantity else 0.0,
-                float(tx.price) if tx.price else 0.0
+                float(tx.price) if tx.price else 0.0,
+                str(tx.order_number or "").strip(),
+                str(tx.trade_id or "").strip()
             )
             existing_keys.add(key)
 
@@ -369,7 +371,9 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
                 tx_data["script"].upper() if tx_data["script"] else "",
                 tx_data["buy_sell"].upper() if tx_data["buy_sell"] else "",
                 float(tx_data["quantity"]) if tx_data["quantity"] else 0.0,
-                float(tx_data["price"]) if tx_data["price"] else 0.0
+                float(tx_data["price"]) if tx_data["price"] else 0.0,
+                str(tx_data.get("order_number") or "").strip(),
+                str(tx_data.get("trade_id") or "").strip()
             )
             
             if key not in existing_keys:

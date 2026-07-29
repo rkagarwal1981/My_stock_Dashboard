@@ -98,31 +98,31 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
       if (section === 'section1') {
         setSection1Data(prev =>
           prev.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           )
         );
       } else if (section === 'section2') {
         setSection2Data(prev => ({
           top_movers: prev.top_movers.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           ),
           bottom_movers: prev.bottom_movers.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           )
         }));
       } else if (section === 'section3') {
         setSection3Data(prev => ({
           top_movers: prev.top_movers.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           ),
           bottom_movers: prev.bottom_movers.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           )
         }));
       } else if (section === 'section4') {
         setSection4Data(prev =>
           prev.map(item =>
-            item.script === script ? { ...item, action_checked: newChecked } : item
+            item.script === script ? { ...item, action_checked: newChecked, action_type: newChecked ? 'MANUAL' : null } : item
           )
         );
       }
@@ -382,7 +382,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section1', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#10b981' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </Tooltip>
                               </TableCell>
@@ -589,7 +595,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section2', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#10b981' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </TableCell>
                               </TableRow>
@@ -729,7 +741,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section2', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#10b981' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </TableCell>
                               </TableRow>
@@ -942,7 +960,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section3', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#10b981' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </TableCell>
                               </TableRow>
@@ -1072,7 +1096,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section3', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#10b981' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </TableCell>
                               </TableRow>
@@ -1302,7 +1332,13 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     onChange={() =>
                                       handleActionToggle(row.script, 'section4', row.action_checked)
                                     }
-                                    sx={{ p: 0.5, color: '#2a2e43', '&.Mui-checked': { color: '#f59e0b' } }}
+                                    sx={{
+                                      p: 0.5,
+                                      color: '#2a2e43',
+                                      '&.Mui-checked': {
+                                        color: row.action_type === 'SELL' ? '#ef4444' : '#10b981'
+                                      }
+                                    }}
                                   />
                                 </Tooltip>
                               </TableCell>

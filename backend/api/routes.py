@@ -2239,11 +2239,49 @@ def delete_watchlist_manual(
         return {"success": True, "deleted": True}
     return {"success": True, "deleted": False}
 
+def get_today_latest_orders_by_script(db: Session):
+    from datetime import datetime, time
+    from sqlalchemy import desc
+    today_start = datetime.combine(datetime.now().date(), time.min)
+    orders = db.query(ExecutedOrder).filter(
+        ExecutedOrder.execution_time >= today_start
+    ).order_by(
+        desc(ExecutedOrder.execution_time),
+        desc(ExecutedOrder.id)
+    ).all()
+    
+    latest_orders = {}
+    for o in orders:
+        script = o.script
+        if script not in latest_orders:
+            latest_orders[script] = o
+    return latest_orders
+
+def resolve_watchlist_action(script: str, section: str, latest_orders: dict, db: Session):
+    order = latest_orders.get(script)
+    if order:
+        return True, order.buy_sell.upper()
+        
+    action_record = db.query(WatchlistAction).filter(
+        WatchlistAction.script == script,
+        WatchlistAction.section == section
+    ).first()
+    
+    if action_record:
+        time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
+        if time_diff.total_seconds() < 24 * 60 * 60:
+            return True, "MANUAL"
+        else:
+            db.delete(action_record)
+            db.commit()
+    return False, None
+
 @router.get("/watchlist/section1")
 def get_watchlist_section1(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    latest_orders = get_today_latest_orders_by_script(db)
     holdings = db.query(Holding).all()
     if not holdings:
         return []
@@ -2311,20 +2349,8 @@ def get_watchlist_section1(
             value = remaining_qty * ltp
             potential_profit = remaining_qty * (ltp - buying_price) if buying_price else 0.0
             
-            action_record = db.query(WatchlistAction).filter(
-                WatchlistAction.script == script,
-                WatchlistAction.section == 'section1'
-            ).first()
+            action_checked, action_type = resolve_watchlist_action(script, 'section1', latest_orders, db)
             
-            action_checked = False
-            if action_record:
-                time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
-                if time_diff.total_seconds() < 24 * 60 * 60:
-                    action_checked = True
-                else:
-                    db.delete(action_record)
-                    db.commit()
-                    
             results.append({
                 "buying_date": buying_date,
                 "script": script,
@@ -2336,6 +2362,7 @@ def get_watchlist_section1(
                 "value": value,
                 "potential_profit": potential_profit,
                 "action_checked": action_checked,
+                "action_type": action_type,
                 "tag_type": "MANUAL" if is_manual else "AUTOMATED",
                 "is_partial": is_partial
             })
@@ -2349,6 +2376,7 @@ def get_watchlist_section2(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    latest_orders = get_today_latest_orders_by_script(db)
     holdings = db.query(Holding).all()
     if not holdings:
         return {"top_movers": [], "bottom_movers": []}
@@ -2393,19 +2421,7 @@ def get_watchlist_section2(
         pnl_val = (ltp * h.quantity) - cost
         pnl_pct = (pnl_val / cost) * 100 if cost else 0.0
         
-        action_record = db.query(WatchlistAction).filter(
-            WatchlistAction.script == script,
-            WatchlistAction.section == 'section2'
-        ).first()
-        
-        action_checked = False
-        if action_record:
-            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
-            if time_diff.total_seconds() < 24 * 60 * 60:
-                action_checked = True
-            else:
-                db.delete(action_record)
-                db.commit()
+        action_checked, action_type = resolve_watchlist_action(script, 'section2', latest_orders, db)
                 
         movers.append({
             "id": h.id,
@@ -2423,6 +2439,7 @@ def get_watchlist_section2(
             "latest_tx_days": latest_tx_days,
             "latest_tx_type": latest_tx_type,
             "action_checked": action_checked,
+            "action_type": action_type,
             "last_updated": h.last_updated
         })
         
@@ -2447,6 +2464,7 @@ def get_watchlist_section3(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    latest_orders = get_today_latest_orders_by_script(db)
     holdings = db.query(Holding).all()
     if not holdings:
         return {"top_movers": [], "bottom_movers": []}
@@ -2494,19 +2512,7 @@ def get_watchlist_section3(
         pnl_val = (ltp * h.quantity) - cost
         pnl_pct = (pnl_val / cost) * 100 if cost else 0.0
         
-        action_record = db.query(WatchlistAction).filter(
-            WatchlistAction.script == script,
-            WatchlistAction.section == 'section3'
-        ).first()
-        
-        action_checked = False
-        if action_record:
-            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
-            if time_diff.total_seconds() < 24 * 60 * 60:
-                action_checked = True
-            else:
-                db.delete(action_record)
-                db.commit()
+        action_checked, action_type = resolve_watchlist_action(script, 'section3', latest_orders, db)
                 
         movers.append({
             "id": h.id,
@@ -2524,6 +2530,7 @@ def get_watchlist_section3(
             "latest_tx_days": latest_tx_days,
             "latest_tx_type": latest_tx_type,
             "action_checked": action_checked,
+            "action_type": action_type,
             "last_updated": h.last_updated
         })
 
@@ -2550,6 +2557,7 @@ def get_watchlist_section4(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    latest_orders = get_today_latest_orders_by_script(db)
     """
     Surfaces stocks that were completely exited within the last 6 months
     and are NOT currently in live holdings — ranked by largest price drop
@@ -2638,20 +2646,7 @@ def get_watchlist_section4(
         if exit_date:
             days_since_exit = (datetime.now().date() - exit_date.date()).days
 
-        # Action check (24h expiry)
-        action_record = db.query(WatchlistAction).filter(
-            WatchlistAction.script == script,
-            WatchlistAction.section == "section4"
-        ).first()
-
-        action_checked = False
-        if action_record:
-            time_diff = datetime.now() - action_record.checked_at.replace(tzinfo=None)
-            if time_diff.total_seconds() < 24 * 60 * 60:
-                action_checked = True
-            else:
-                db.delete(action_record)
-                db.commit()
+        action_checked, action_type = resolve_watchlist_action(script, 'section4', latest_orders, db)
 
         results.append({
             "script": script,
@@ -2663,6 +2658,7 @@ def get_watchlist_section4(
             "change_in_ltp_pct": change_pct,
             "drop_from_exit_pct": drop_from_exit_pct,
             "action_checked": action_checked,
+            "action_type": action_type,
         })
 
     # Step 6: Sort by drop_from_exit_pct ascending (most negative = biggest drop = best re-entry)

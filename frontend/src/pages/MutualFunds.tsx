@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
 import { AgGridReact } from 'ag-grid-react';
 import 'ag-grid-community/styles/ag-grid.css';
@@ -119,13 +119,16 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   // Export state
   const [exporting, setExporting] = useState<boolean>(false);
 
+  // Track currently displayed/filtered rows in the AG Grid table
+  const [displayedRows, setDisplayedRows] = useState<any[]>([]);
+
   const handleExportExcel = async () => {
     try {
       setExporting(true);
       const response = await axios.post(
         '/api/mutual-funds/export',
         {
-          rows: filteredRows,
+          rows: displayedRows,
           fund_code: selectedFund,
           filter: selectedFilter,
           format: 'excel'
@@ -316,10 +319,26 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
     return rows;
   }, [analytics, selectedFilter, searchText, months, summary]);
 
+  // Reset displayedRows to filteredRows when the main data or global filters change
+  useEffect(() => {
+    setDisplayedRows(filteredRows);
+  }, [filteredRows]);
+
+  const handleGridFilterOrModelChanged = useCallback((params: any) => {
+    if (!params || !params.api) return;
+    const rows: any[] = [];
+    params.api.forEachNodeAfterFilter((node: any) => {
+      if (node.data) {
+        rows.push(node.data);
+      }
+    });
+    setDisplayedRows(rows);
+  }, []);
+
   // Reactive tradingview watchlist string generated from active filtered rows state
   const tradingViewWatchlistString = useMemo(() => {
-    if (!filteredRows || filteredRows.length === 0) return '';
-    const rawSymbols = filteredRows.map((r: any) => {
+    if (!displayedRows || displayedRows.length === 0) return '';
+    const rawSymbols = displayedRows.map((r: any) => {
       let sym = r.symbol || r.stock_name || '';
       sym = sym.trim();
       if (sym.endsWith('-EQ')) {
@@ -331,7 +350,7 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
     // Deduplicate maintaining order
     const uniqueSymbols = Array.from(new Set(rawSymbols));
     return uniqueSymbols.join(', ');
-  }, [filteredRows]);
+  }, [displayedRows]);
 
   const handleCopyWatchlist = () => {
     if (!tradingViewWatchlistString) return;
@@ -851,6 +870,8 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
             paginationPageSizeSelector={[10, 20, 50]}
             suppressScrollOnNewData={true}
             animateRows={true}
+            onFilterChanged={handleGridFilterOrModelChanged}
+            onModelUpdated={handleGridFilterOrModelChanged}
           />
         </div>
       </Card>

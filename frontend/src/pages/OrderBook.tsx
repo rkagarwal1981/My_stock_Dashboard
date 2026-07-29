@@ -303,14 +303,14 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
       </Tabs>
 
       {/* AG Grid */}
-      <div className="ag-theme-alpine-dark" style={{ height: 500, width: '100%' }}>
+      <div className="ag-theme-alpine-dark" style={{ height: 950, width: '100%' }}>
         <AgGridReact
           theme="legacy"
           rowData={filteredOrders}
           columnDefs={columnDefs as any}
           defaultColDef={{ sortable: true, filter: true, resizable: true }}
           pagination={true}
-          paginationPageSize={10}
+          paginationPageSize={20}
           paginationPageSizeSelector={[10, 20, 50]}
           onGridReady={(params) => setGridApi(params.api)}
           animateRows={true}

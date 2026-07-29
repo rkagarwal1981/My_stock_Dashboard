@@ -274,7 +274,10 @@ def calculate_xirr(cash_flows: List[Dict[str, Any]]) -> float:
             days = (date - t0).days
             if r <= -1.0:
                 return float('inf')
-            val += amount / ((1.0 + r) ** (days / 365.0))
+            try:
+                val += amount / ((1.0 + r) ** (days / 365.0))
+            except (OverflowError, ValueError):
+                return float('inf') if amount > 0 else float('-inf')
         return val
 
     # Secant Method solver
@@ -293,7 +296,7 @@ def calculate_xirr(cash_flows: List[Dict[str, Any]]) -> float:
             r0, r1 = r1, r_next
             f0 = f1
             f1 = eq(r1)
-    except ZeroDivisionError:
+    except (ZeroDivisionError, OverflowError, ValueError):
         pass
         
     return 0.0

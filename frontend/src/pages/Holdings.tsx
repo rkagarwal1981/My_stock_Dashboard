@@ -509,7 +509,7 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
       </Tabs>
 
       {/* AG Grid */}
-      <div className="ag-theme-alpine-dark" style={{ height: 600, width: '100%' }}>
+      <div className="ag-theme-alpine-dark" style={{ height: 1150, width: '100%' }}>
         <AgGridReact
           theme="legacy"
           rowData={filteredHoldings}
