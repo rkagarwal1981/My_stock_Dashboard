@@ -121,8 +121,14 @@ def get_zerodha_api_client() -> Optional[KiteConnect]:
             time.sleep(2)
             
             # Perform login
-            if "login" in page.url or page.locator("input#userid").is_visible():
-                page.fill("input#userid", username)
+            if "login" in page.url or page.locator("input#userid").is_visible() or page.locator("input#password").is_visible():
+                if page.locator("input#userid").is_visible():
+                    page.fill("input#userid", username)
+                elif page.locator("text=Change user").is_visible():
+                    if not page.locator(f"text={username}").is_visible():
+                        page.click("text=Change user")
+                        page.wait_for_selector("input#userid", timeout=5000)
+                        page.fill("input#userid", username)
                 page.fill("input#password", password)
                 page.click("button[type='submit']")
                 

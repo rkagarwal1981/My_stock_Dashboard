@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright
 
 # Set this to False if you want to run Playwright headlessly
-HEADLESS = False
+HEADLESS = True
 
 # Define directories
 WORKSPACE_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -165,9 +165,15 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
             page.goto(connect_url, timeout=30000)
             time.sleep(3)
             
-            if "login" in page.url or page.locator("input#userid").is_visible():
+            if "login" in page.url or page.locator("input#userid").is_visible() or page.locator("input#password").is_visible():
                 print("Logging in to Kite...")
-                page.fill("input#userid", username)
+                if page.locator("input#userid").is_visible():
+                    page.fill("input#userid", username)
+                elif page.locator("text=Change user").is_visible():
+                    if not page.locator(f"text={username}").is_visible():
+                        page.click("text=Change user")
+                        page.wait_for_selector("input#userid", timeout=5000)
+                        page.fill("input#userid", username)
                 page.fill("input#password", password)
                 page.click("button[type='submit']")
                 
@@ -302,14 +308,20 @@ def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
             time.sleep(3)
             
             # Check if login is required
-            is_login = page.url.startswith("https://kite.zerodha.com/login") or page.locator("input#userid").is_visible()
+            is_login = page.url.startswith("https://kite.zerodha.com/login") or page.locator("input#userid").is_visible() or page.locator("input#password").is_visible()
             
             if is_login:
                 print("Login page detected. Attempting login...")
                 page.goto("https://kite.zerodha.com/")
                 time.sleep(2)
                 
-                page.fill("input#userid", username)
+                if page.locator("input#userid").is_visible():
+                    page.fill("input#userid", username)
+                elif page.locator("text=Change user").is_visible():
+                    if not page.locator(f"text={username}").is_visible():
+                        page.click("text=Change user")
+                        page.wait_for_selector("input#userid", timeout=5000)
+                        page.fill("input#userid", username)
                 page.fill("input#password", password)
                 page.click("button[type='submit']")
                 
@@ -401,7 +413,7 @@ def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
             for index, r in enumerate(rows):
                 cells = r.locator("td").all()
                 if len(cells) >= 6:
-                    script = cells[0].inner_text().strip()
+                    script = cells[0].inner_text().split('\n')[0].strip()
                     if not script or script.lower() in ["total", "scrip", "symbol"]:
                         continue
                         

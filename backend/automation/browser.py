@@ -159,8 +159,14 @@ def run_zerodha_scraper(username: str, password_decrypted: str, pin_decrypted: O
                 page.goto(connect_url, timeout=30000)
                 time.sleep(2)
                 
-                if "login" in page.url or page.locator("input#userid").is_visible():
-                    page.fill("input#userid", username)
+                if "login" in page.url or page.locator("input#userid").is_visible() or page.locator("input#password").is_visible():
+                    if page.locator("input#userid").is_visible():
+                        page.fill("input#userid", username)
+                    elif page.locator("text=Change user").is_visible():
+                        if not page.locator(f"text={username}").is_visible():
+                            page.click("text=Change user")
+                            page.wait_for_selector("input#userid", timeout=5000)
+                            page.fill("input#userid", username)
                     page.fill("input#password", password_decrypted)
                     page.click("button[type='submit']")
                     
@@ -270,9 +276,16 @@ def run_zerodha_scraper(username: str, password_decrypted: str, pin_decrypted: O
         try:
             page.goto("https://kite.zerodha.com/holdings/equity", timeout=30000)
             
-            if page.url.startswith("https://kite.zerodha.com/login") or page.locator("input#userid").is_visible():
+            if page.url.startswith("https://kite.zerodha.com/login") or page.locator("input#userid").is_visible() or page.locator("input#password").is_visible():
                 page.goto("https://kite.zerodha.com/")
-                page.fill("input#userid", username)
+                time.sleep(2)
+                if page.locator("input#userid").is_visible():
+                    page.fill("input#userid", username)
+                elif page.locator("text=Change user").is_visible():
+                    if not page.locator(f"text={username}").is_visible():
+                        page.click("text=Change user")
+                        page.wait_for_selector("input#userid", timeout=5000)
+                        page.fill("input#userid", username)
                 page.fill("input#password", password_decrypted)
                 page.click("button[type='submit']")
                 
@@ -343,7 +356,7 @@ def run_zerodha_scraper(username: str, password_decrypted: str, pin_decrypted: O
             for r in rows:
                 cells = r.locator("td").all()
                 if len(cells) >= 5:
-                    script = cells[0].inner_text().strip()
+                    script = cells[0].inner_text().split('\n')[0].strip()
                     qty = clean_numeric(cells[1].inner_text())
                     avg_price = clean_numeric(cells[2].inner_text())
                     ltp = clean_numeric(cells[3].inner_text())

@@ -29,6 +29,7 @@ import OrderBook from './pages/OrderBook';
 import MutualFunds from './pages/MutualFunds';
 import TargetSetting from './pages/TargetSetting';
 import Watchlist from './pages/Watchlist';
+import HoldingAnalysis from './pages/HoldingAnalysis';
 
 // Material UI components
 import {
@@ -74,6 +75,7 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import StarIcon from '@mui/icons-material/Star';
+import PieChartIcon from '@mui/icons-material/PieChart';
 
 const drawerWidth = 260;
 
@@ -359,6 +361,8 @@ function App() {
         return <Analytics />;
       case 'mutual-funds':
         return <MutualFunds onViewStock={handleViewStock} />;
+      case 'holding-analysis':
+        return <HoldingAnalysis />;
       case 'logs':
         return <AuditLogs />;
       case 'settings':
@@ -467,6 +471,7 @@ function App() {
             {[
               { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
               { id: 'holdings', text: 'Live Holdings', icon: <AccountBalanceWalletIcon /> },
+              { id: 'holding-analysis', text: 'Holding Analysis', icon: <PieChartIcon /> },
               { id: 'targets', text: 'Target Setting', icon: <TrackChangesIcon /> },
               { id: 'watchlist', text: 'Watchlist', icon: <StarIcon /> },
               { id: 'order-book', text: 'Order Book', icon: <AssignmentIcon /> },

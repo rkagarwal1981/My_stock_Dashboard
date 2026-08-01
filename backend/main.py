@@ -16,6 +16,7 @@ from services.importer import scan_and_import_directory, run_trade_pullers
 from models.audit_log import AuditLog
 from models.watchlist import WatchlistAction, WatchlistManualScript
 from models.stock_research import StockNote, StockAttachment
+from models.stock_metadata import StockMetadata
 
 # Create the DB tables
 Base.metadata.create_all(bind=engine)

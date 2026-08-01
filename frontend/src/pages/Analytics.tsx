@@ -9,7 +9,6 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import AnalyticsIcon from '@mui/icons-material/Analytics';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
   CartesianGrid, Cell, LineChart, Line, Legend, ReferenceLine,
@@ -226,34 +225,7 @@ const tooltipStyle = {
   itemStyle: { fontSize: 12 },
 };
 
-// ─── Treemap cell renderer ────────────────────────────────────────────────────
 
-const TreemapContent = (props: any) => {
-  const { x, y, width, height, name, value, pct, depth } = props;
-  if (width < 20 || height < 20) return null;
-  const color = SECTOR_COLORS[name] || '#475569';
-  const showText = width > 60 && height > 40;
-  return (
-    <g>
-      <rect x={x + 1} y={y + 1} width={width - 2} height={height - 2}
-        rx={6} ry={6} fill={color} fillOpacity={depth === 1 ? 0.85 : 0.55}
-        stroke="rgba(255,255,255,0.1)" strokeWidth={1}
-        style={{ filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.3))' }}
-      />
-      {showText && (
-        <>
-          <text x={x + 10} y={y + 22} fill="#0f172a" fontSize={Math.min(15.6, width / 6.6)} fontWeight={800}>{name}</text>
-          {height > 56 && (
-            <text x={x + 10} y={y + 40} fill="rgba(15, 23, 42, 0.85)" fontSize={Math.min(13.2, width / 7.5)} fontWeight={600}>{fmt(value)}</text>
-          )}
-          {height > 72 && (
-            <text x={x + 10} y={y + 58} fill="rgba(15, 23, 42, 0.70)" fontSize={Math.min(12, width / 8.3)} fontWeight={600}>{pct?.toFixed(1)}%</text>
-          )}
-        </>
-      )}
-    </g>
-  );
-};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Main Analytics Component
@@ -282,8 +254,7 @@ const Analytics: React.FC = () => {
   const [effData, setEffData]             = useState<any[]>([]);
   const [effLoading, setEffLoading]       = useState(true);
 
-  // ── Widget 4 — Others drill-down state ───────────────────────────────────
-  const [othersOpen, setOthersOpen]       = useState(false);
+
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
 
@@ -452,33 +423,7 @@ const Analytics: React.FC = () => {
   /** Churn bins normalised to the canonical 7-bucket sequence */
   const churnBinsRemapped = remapChurnBins(churnData.bins || []);
 
-  // ── Widget 4: derive treemap data applying exclusions + reclassification ──
 
-  /** Individual items inside "Others" — populated when the API returns them */
-  const othersRawItems: any[] = sectorData.sectors.find((s: any) => s.sector === 'Others')?.stocks ?? [];
-
-  /** Existing named sectors (excluding Others) — used in the re-categorize dropdown */
-  const namedSectors: string[] = sectorData.sectors
-    .map((s: any) => s.sector)
-    .filter((s: string) => s !== 'Others');
-
-  /** User-created custom group names not yet in the API response */
-  const customSectorNames: string[] = ([
-    ...new Set(othersRawItems.map(item => item.custom_category).filter(Boolean))
-  ] as string[]).filter(n => !namedSectors.includes(n) && n !== 'Others');
-
-  /**
-   * Treemap data derived directly from the backend response which has overrides
-   * (exclusions and custom categories) already applied.
-   */
-  const derivedSectors: { name: string; size: number; value: number; pct: number }[] = sectorData.sectors
-    .filter((s: any) => s.value > 0)
-    .map((s: any) => ({
-      name: s.sector,
-      size: s.value,
-      value: s.value,
-      pct: s.pct
-    }));
 
   // ── Summary KPIs ──────────────────────────────────────────────────────────
 
@@ -907,297 +852,7 @@ const Analytics: React.FC = () => {
         </ChartCard>
       </Box>
 
-      {/* ═══════════════════════════════════════════════════════════════════
-          Row 3 — Sector Treemap (full width) + Others drill-down accordion
-      ══════════════════════════════════════════════════════════════════════ */}
-      <ChartCard
-        title="Sector Allocation"
-        subtitle="Active holdings grouped by industrial sector · expand Others to drill down"
-        icon={<AccountTreeIcon sx={{ fontSize: 18, color: '#f59e0b' }} />}
-      >
-        {sectorLoading ? <Spinner /> : derivedSectors.length === 0 ? (
-          <EmptyState text="No holdings data. Import transactions first." />
-        ) : (
-          <>
-            {/* Legend chips */}
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
-              {derivedSectors.map(s => (
-                <MuiTooltip key={s.name} title={`${s.name}: ${fmt(s.value)} · ${s.pct.toFixed(1)}%`} arrow>
-                  <Chip
-                    label={`${s.name} ${s.pct.toFixed(0)}%`}
-                    size="small"
-                    sx={{
-                      bgcolor: `${SECTOR_COLORS[s.name] || '#475569'}22`,
-                      color:    SECTOR_COLORS[s.name] || '#8b5cf6',
-                      border:  `1px solid ${SECTOR_COLORS[s.name] || '#475569'}44`,
-                      fontSize: 10, fontWeight: 700, cursor: 'default',
-                    }}
-                  />
-                </MuiTooltip>
-              ))}
-            </Box>
 
-            {/* Treemap */}
-            <ResponsiveContainer width="100%" height={300}>
-              <Treemap data={derivedSectors} dataKey="size" aspectRatio={4 / 3}
-                stroke="rgba(0,0,0,0.3)" content={<TreemapContent />} />
-            </ResponsiveContainer>
-
-            {/* ── Others Drill-down Accordion ──────────────────────────────── */}
-            {(othersRawItems.length > 0 || derivedSectors.some(s => s.name === 'Others')) && (
-              <Box sx={{ mt: 2.5 }}>
-
-                {/* Toggle header */}
-                <Box
-                  onClick={() => setOthersOpen(o => !o)}
-                  sx={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    cursor: 'pointer', px: 2, py: 1.25, borderRadius: 2,
-                    border: '1px solid #2a2e43',
-                    background: othersOpen ? 'rgba(71,85,105,0.22)' : 'rgba(71,85,105,0.10)',
-                    '&:hover': { background: 'rgba(71,85,105,0.22)' },
-                    transition: 'background 0.2s', userSelect: 'none',
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#475569', flexShrink: 0 }} />
-                    <Typography variant="body2" sx={{ fontWeight: 600, color: '#94a3b8' }}>
-                      Others — Drill-down &amp; Re-categorize
-                    </Typography>
-                    {othersRawItems.length > 0 && (
-                      <Chip label={`${othersRawItems.length} stocks`} size="small"
-                        sx={{ bgcolor: 'rgba(71,85,105,0.25)', color: '#94a3b8', fontSize: 10 }} />
-                    )}
-                    {othersRawItems.filter(item => item.is_excluded).length > 0 && (
-                      <Chip label={`${othersRawItems.filter(item => item.is_excluded).length} excluded`} size="small"
-                        sx={{ bgcolor: 'rgba(239,68,68,0.12)', color: '#ef4444', fontSize: 10 }} />
-                    )}
-                    {othersRawItems.filter(item => item.custom_category).length > 0 && (
-                      <Chip label={`${othersRawItems.filter(item => item.custom_category).length} reclassified`} size="small"
-                        sx={{ bgcolor: 'rgba(6,182,212,0.12)', color: '#06b6d4', fontSize: 10 }} />
-                    )}
-                  </Box>
-                  <IconButton size="small" sx={{ color: '#64748b', pointerEvents: 'none' }}>
-                    {othersOpen ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-                  </IconButton>
-                </Box>
-
-                {/* Expandable panel */}
-                <Collapse in={othersOpen}>
-                  <Box sx={{ mt: 1, border: '1px solid #2a2e43', borderRadius: 2, background: 'rgba(13,15,25,0.7)', overflow: 'hidden' }}>
-
-                    {othersRawItems.length === 0 ? (
-                      /* Backend hasn't returned item-level data yet */
-                      <Box sx={{ p: 2.5 }}>
-                        <Typography variant="body2" sx={{ color: '#64748b', fontSize: 12, lineHeight: 1.75 }}>
-                          The sector-allocation API does not yet return item-level data for the "Others" bucket.
-                          Add a <code style={{ color: '#06b6d4' }}>stocks</code> array
-                          (each entry: <code style={{ color: '#06b6d4' }}>{'{ script, value }'}</code>) to the
-                          Others sector object in the response to enable per-stock drill-down, exclusion, and re-categorization.
-                        </Typography>
-                      </Box>
-                    ) : (
-                      <>
-                        {/* Column header row */}
-                        <Box sx={{
-                          display: 'grid', gridTemplateColumns: '1fr 100px 68px 190px 72px',
-                          px: 2, py: 1, borderBottom: '1px solid #2a2e43', bgcolor: 'rgba(42,46,67,0.45)',
-                        }}>
-                          {['Stock', 'Value', 'Weight', 'Assign Sector', 'Exclude'].map(h => (
-                            <Typography key={h} variant="caption"
-                              sx={{ color: '#475569', fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                              {h}
-                            </Typography>
-                          ))}
-                        </Box>
-
-                        {/* Item rows */}
-                        {othersRawItems.map((item: any, idx: number) => {
-                          const name        = String(item.script ?? item.name ?? item.symbol ?? item.stock ?? `Item ${idx + 1}`);
-                          const itemValue   = Number(item.value ?? 0);
-                          const itemPct     = sectorData.total_value > 0 ? (itemValue / sectorData.total_value) * 100 : 0;
-                          const isExcluded  = item.is_excluded ?? false;
-                          const assignedSec = item.custom_category ?? '';
-
-                          return (
-                            <Box
-                              key={name}
-                              sx={{
-                                display: 'grid', gridTemplateColumns: '1fr 100px 68px 190px 72px',
-                                px: 2, py: 0.9, alignItems: 'center',
-                                borderBottom: idx < othersRawItems.length - 1 ? '1px solid rgba(42,46,67,0.45)' : 'none',
-                                opacity: isExcluded ? 0.35 : 1,
-                                transition: 'opacity 0.2s, background 0.15s',
-                                '&:hover': { bgcolor: 'rgba(42,46,67,0.28)' },
-                              }}
-                            >
-                              {/* Stock name */}
-                              <Typography variant="body2"
-                                sx={{ fontWeight: 600, color: '#e2e8f0', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {name}
-                              </Typography>
-
-                              {/* Value */}
-                              <Typography variant="body2" sx={{ color: '#94a3b8', fontSize: 12 }}>
-                                {fmt(itemValue)}
-                              </Typography>
-
-                              {/* Weight */}
-                              <Typography variant="body2" sx={{ color: '#8b5cf6', fontSize: 12, fontWeight: 700 }}>
-                                {itemPct.toFixed(1)}%
-                              </Typography>
-
-                              {/* Re-categorize dropdown */}
-                              <FormControl size="small" disabled={isExcluded} sx={{ maxWidth: 180 }}>
-                                <Select
-                                  displayEmpty
-                                  value={assignedSec}
-                                  onChange={async (e) => {
-                                    const val = e.target.value as string;
-                                    let targetSector = val;
-                                    if (val === '__new__') {
-                                      const newName = window.prompt('Enter new group / sector name:');
-                                      if (newName?.trim()) {
-                                        targetSector = newName.trim();
-                                      } else {
-                                        return;
-                                      }
-                                    }
-                                    try {
-                                      await axios.post('/api/analytics/sector-overrides', {
-                                        stock_symbol: name,
-                                        is_excluded: isExcluded,
-                                        custom_category: targetSector || null
-                                      });
-                                      fetchSector();
-                                    } catch (err) {
-                                      console.error("Failed to save sector override", err);
-                                    }
-                                  }}
-                                  renderValue={v => v
-                                    ? <span style={{ color: '#06b6d4', fontSize: 11 }}>{v as string}</span>
-                                    : <span style={{ color: '#475569', fontSize: 11 }}>Others (default)</span>
-                                  }
-                                  sx={{ fontSize: 11, borderRadius: 1.5, '& .MuiSelect-select': { py: 0.65 } }}
-                                >
-                                  <MenuItem value="" sx={{ fontSize: 11, color: '#64748b' }}>Others (default)</MenuItem>
-                                  <Divider sx={{ my: 0.5, borderColor: '#2a2e43' }} />
-                                  {namedSectors.map(sec => (
-                                    <MenuItem key={sec} value={sec} sx={{ fontSize: 11 }}>
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                        <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: SECTOR_COLORS[sec] || '#475569', flexShrink: 0 }} />
-                                        {sec}
-                                      </Box>
-                                    </MenuItem>
-                                  ))}
-                                  {customSectorNames.map(sec => (
-                                    <MenuItem key={sec} value={sec} sx={{ fontSize: 11, color: '#8b5cf6' }}>&#9733; {sec}</MenuItem>
-                                  ))}
-                                  <Divider sx={{ my: 0.5, borderColor: '#2a2e43' }} />
-                                  <MenuItem value="__new__" sx={{ fontSize: 11, color: '#10b981' }}>+ New Group&hellip;</MenuItem>
-                                </Select>
-                              </FormControl>
-
-                              {/* Exclude checkbox */}
-                              <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-                                <Checkbox
-                                  size="small"
-                                  checked={isExcluded}
-                                  onChange={async (e) => {
-                                    const checked = e.target.checked;
-                                    try {
-                                      await axios.post('/api/analytics/sector-overrides', {
-                                        stock_symbol: name,
-                                        is_excluded: checked,
-                                        custom_category: assignedSec || null
-                                      });
-                                      fetchSector();
-                                    } catch (err) {
-                                      console.error("Failed to save sector override", err);
-                                    }
-                                  }}
-                                  title={isExcluded ? 'Click to include' : 'Click to exclude from allocation'}
-                                  sx={{ color: '#475569', '&.Mui-checked': { color: '#ef4444' }, p: 0.5 }}
-                                />
-                              </Box>
-                            </Box>
-                          );
-                        })}
-
-                        {/* Footer — quick-clear chips shown only when filters are active */}
-                        {(othersRawItems.some(item => item.is_excluded || item.custom_category)) && (
-                          <Box sx={{
-                            px: 2, py: 1.25, borderTop: '1px solid #2a2e43', bgcolor: 'rgba(42,46,67,0.3)',
-                            display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap',
-                          }}>
-                            <Typography variant="caption" sx={{ color: '#475569', fontSize: 10 }}>Active filters:</Typography>
-                            {othersRawItems.some(item => item.is_excluded) && (
-                              <Chip
-                                label={`Clear ${othersRawItems.filter(item => item.is_excluded).length} excluded`} size="small"
-                                onDelete={async () => {
-                                  const excluded = othersRawItems.filter(item => item.is_excluded);
-                                  for (const item of excluded) {
-                                    await axios.post('/api/analytics/sector-overrides', {
-                                      stock_symbol: item.script,
-                                      is_excluded: false,
-                                      custom_category: item.custom_category || null
-                                    });
-                                  }
-                                  fetchSector();
-                                }}
-                                onClick={async () => {
-                                  const excluded = othersRawItems.filter(item => item.is_excluded);
-                                  for (const item of excluded) {
-                                    await axios.post('/api/analytics/sector-overrides', {
-                                      stock_symbol: item.script,
-                                      is_excluded: false,
-                                      custom_category: item.custom_category || null
-                                    });
-                                  }
-                                  fetchSector();
-                                }}
-                                sx={{ bgcolor: 'rgba(239,68,68,0.1)', color: '#ef4444', fontSize: 10, cursor: 'pointer' }}
-                              />
-                            )}
-                            {othersRawItems.some(item => item.custom_category) && (
-                              <Chip
-                                label={`Reset ${othersRawItems.filter(item => item.custom_category).length} reclassified`} size="small"
-                                onDelete={async () => {
-                                  const reclassified = othersRawItems.filter(item => item.custom_category);
-                                  for (const item of reclassified) {
-                                    await axios.post('/api/analytics/sector-overrides', {
-                                      stock_symbol: item.script,
-                                      is_excluded: item.is_excluded || false,
-                                      custom_category: null
-                                    });
-                                  }
-                                  fetchSector();
-                                }}
-                                onClick={async () => {
-                                  const reclassified = othersRawItems.filter(item => item.custom_category);
-                                  for (const item of reclassified) {
-                                    await axios.post('/api/analytics/sector-overrides', {
-                                      stock_symbol: item.script,
-                                      is_excluded: item.is_excluded || false,
-                                      custom_category: null
-                                    });
-                                  }
-                                  fetchSector();
-                                }}
-                                sx={{ bgcolor: 'rgba(6,182,212,0.1)', color: '#06b6d4', fontSize: 10, cursor: 'pointer' }}
-                              />
-                            )}
-                          </Box>
-                        )}
-                      </>
-                    )}
-                  </Box>
-                </Collapse>
-              </Box>
-            )}
-          </>
-        )}
-      </ChartCard>
     </Box>
   );
 };

@@ -1987,6 +1987,308 @@ def analytics_sector_allocation(
     return {"sectors": result, "total_value": round(total_value, 2)}
 
 
+@router.get("/holdings-analysis")
+def get_holdings_analysis(
+    broker: Optional[str] = None,
+    force_refresh: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from services.metadata_service import get_or_fetch_stock_metadata
+    from models.stock_metadata import StockMetadata as SM
+
+    # 1. Fetch current holdings
+    query = db.query(Holding)
+    if broker and broker.lower() != "all":
+        query = query.filter(Holding.broker.ilike(broker))
+    holdings = query.all()
+    
+    if not holdings:
+        return {
+            "holdings": [],
+            "market_cap_summary": {
+                "Large": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []},
+                "Mid": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []},
+                "Small": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []}
+            },
+            "sector_summary": [],
+            "portfolio_beta": 1.0,
+            "nifty100_beta": 1.0,
+            "beta_coverage_pct": 0.0
+        }
+        
+    # Get active scrip symbols
+    scrips = list(set(h.script for h in holdings))
+    
+    # Fetch/caching metadata
+    metadata_map = get_or_fetch_stock_metadata(db, scrips, force_refresh=force_refresh)
+    
+    # Load Excel metadata mapping
+    excel_map = {}
+    excel_path = r"C:\My_work_RA\Antigravity\Market Cap & Beta Value.xlsx"
+    if os.path.exists(excel_path):
+        try:
+            def normalize_excel_cat(val) -> str:
+                if pd.isna(val) or not str(val).strip():
+                    return None
+                v = str(val).strip().title()
+                if "Large" in v:
+                    return "Large"
+                elif "Mid" in v:
+                    return "Mid"
+                elif "Small" in v:
+                    return "Small"
+                return None
+
+            df = pd.read_excel(excel_path)
+            # Standardize columns
+            df.columns = [c.strip() for c in df.columns]
+            for _, row in df.iterrows():
+                symbol = str(row['Script']).strip().upper()
+                excel_map[symbol] = {
+                    'market_cap': float(row['Market Cap in Cr']) * 10_000_000 if not pd.isna(row['Market Cap in Cr']) else 0.0,
+                    'beta': float(row['Beta']) if not pd.isna(row['Beta']) else None,
+                    'pe': float(row['P/E']) if not pd.isna(row['P/E']) else None,
+                    'industry': str(row['Industry']).strip() if not pd.isna(row['Industry']) else None,
+                    'category': normalize_excel_cat(row.get('Category')) if 'Category' in df.columns else None
+                }
+        except Exception as e:
+            print(f"Error loading Market Cap & Beta Value Excel mapping: {e}")
+
+    def local_classify_market_cap(mcap: float) -> str:
+        if mcap >= 200_000_000_000:   # >= 20,000 Cr
+            return "Large"
+        elif mcap >= 50_000_000_000:  # >= 5,000 Cr
+            return "Mid"
+        return "Small"
+
+    # Detailed list of holdings with metadata
+    holdings_list = []
+    
+    # Summaries maps (only include non-excluded stocks)
+    cap_summary = {
+        "Large": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []},
+        "Mid": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []},
+        "Small": {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []}
+    }
+    sector_summary = {}
+
+    # Calculate total value for ALL stocks (for table display and contribution_pct)
+    total_val_all = sum(float(h.current_value or 0.0) for h in holdings)
+
+    # Calculate total value for INCLUDED stocks (for chart percentages)
+    total_val_included = 0.0
+    for h in holdings:
+        cv = float(h.current_value or 0.0)
+        if cv <= 0:
+            continue
+        meta = metadata_map.get(h.script)
+        is_excluded = getattr(meta, 'is_excluded', False) if meta else False
+        if not is_excluded:
+            total_val_included += cv
+    
+    for h in holdings:
+        cv = float(h.current_value or 0.0)
+        if cv <= 0:
+            continue
+            
+        meta = metadata_map.get(h.script)
+        
+        # Metadata values — sector_override takes priority
+        comp_name = meta.company_name if meta else h.script
+        raw_sector = meta.sector if meta else "Others"
+        sector_override = getattr(meta, 'sector_override', None) if meta else None
+        sector = sector_override or raw_sector
+        
+        # Override fields from excel if present
+        script_key = h.script.strip().upper()
+        excel_data = excel_map.get(script_key)
+        
+        if excel_data:
+            market_cap_val = excel_data['market_cap']
+            excel_cat = excel_data.get('category')
+            if excel_cat:
+                market_cap_cat = excel_cat
+            else:
+                market_cap_cat = local_classify_market_cap(market_cap_val)
+            beta = excel_data['beta']
+            pe_val = excel_data['pe']
+            industry = excel_data['industry'] or (meta.industry if meta else "Others")
+        else:
+            market_cap_val = meta.market_cap if meta else 0.0
+            market_cap_cat = meta.market_cap_category if meta else "Small"
+            beta = meta.beta if meta else None
+            pe_val = None
+            industry = meta.industry if meta else "Others"
+            
+        is_excluded = getattr(meta, 'is_excluded', False) if meta else False
+        
+        # Contribution percentage relative to total portfolio (all stocks)
+        contribution_pct = (cv / total_val_all * 100.0) if total_val_all > 0 else 0.0
+        
+        # Weighted beta value: stock contribution %age x Beta
+        actual_beta = beta if beta is not None else 1.0
+        weighted_beta = (contribution_pct / 100.0) * actual_beta
+        
+        # Build holding object (always included in table)
+        holding_obj = {
+            "script": h.script,
+            "broker": h.broker,
+            "quantity": h.quantity,
+            "avg_price": h.avg_price,
+            "ltp": h.ltp,
+            "current_value": cv,
+            "pnl": h.pnl,
+            "company_name": comp_name,
+            "sector": sector,
+            "sector_override": sector_override,
+            "raw_sector": raw_sector,
+            "industry": industry,
+            "market_cap": market_cap_val,
+            "market_cap_category": market_cap_cat,
+            "beta": actual_beta,
+            "beta_is_actual": beta is not None,
+            "contribution_pct": round(contribution_pct, 2),
+            "is_excluded": is_excluded,
+            "pe": pe_val,
+            "weighted_beta": round(weighted_beta, 4)
+        }
+        holdings_list.append(holding_obj)
+        
+        # Skip excluded stocks from chart aggregations and beta
+        if is_excluded:
+            continue
+        
+        # Chart contribution percentage (relative to included stocks only)
+        chart_pct = (cv / total_val_included * 100.0) if total_val_included > 0 else 0.0
+
+        # 1. Cap summary aggregation
+        if market_cap_cat not in cap_summary:
+            cap_summary[market_cap_cat] = {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []}
+        cap_summary[market_cap_cat]["value"] += cv
+        cap_summary[market_cap_cat]["stock_count"] += 1
+        cap_summary[market_cap_cat]["stocks"].append({
+            "script": h.script,
+            "company_name": comp_name,
+            "value": cv,
+            "contribution_pct": round(chart_pct, 2)
+        })
+        
+        # 2. Sector summary aggregation
+        if sector not in sector_summary:
+            sector_summary[sector] = {"value": 0.0, "pct": 0.0, "stock_count": 0, "stocks": []}
+        sector_summary[sector]["value"] += cv
+        sector_summary[sector]["stock_count"] += 1
+        sector_summary[sector]["stocks"].append({
+            "script": h.script,
+            "company_name": comp_name,
+            "value": cv,
+            "industry": industry,
+            "beta": actual_beta,
+            "beta_is_actual": beta is not None,
+            "contribution_pct": round(chart_pct, 2)
+        })
+            
+    # Normalize percentages
+    for cat, cat_data in cap_summary.items():
+        cat_data["pct"] = round((cat_data["value"] / total_val_included * 100.0) if total_val_included > 0 else 0.0, 2)
+        cat_data["value"] = round(cat_data["value"], 2)
+        cat_data["stocks"] = sorted(cat_data["stocks"], key=lambda x: x["value"], reverse=True)
+        cat_total = cat_data["value"]
+        for s in cat_data["stocks"]:
+            s["category_contribution_pct"] = round((s["value"] / cat_total * 100.0) if cat_total > 0 else 0.0, 2)
+            
+    sector_list = []
+    for s_name, s_data in sector_summary.items():
+        pct = (s_data["value"] / total_val_included * 100.0) if total_val_included > 0 else 0.0
+        s_data["stocks"] = sorted(s_data["stocks"], key=lambda x: x["value"], reverse=True)
+        sect_total = s_data["value"]
+        for s in s_data["stocks"]:
+            s["sector_contribution_pct"] = round((s["value"] / sect_total * 100.0) if sect_total > 0 else 0.0, 2)
+            
+        sector_list.append({
+            "sector": s_name,
+            "value": round(s_data["value"], 2),
+            "pct": round(pct, 2),
+            "stock_count": s_data["stock_count"],
+            "stocks": s_data["stocks"]
+        })
+        
+    sector_list = sorted(sector_list, key=lambda x: x["value"], reverse=True)
+    
+    # Calculate portfolio beta and coverage of actual betas
+    # Portfolio beta = sum of (contribution_pct / 100 * beta) for non-excluded positions
+    portfolio_beta = sum(((h_obj["current_value"] / total_val_all) * h_obj["beta"]) for h_obj in holdings_list if not h_obj["is_excluded"]) if total_val_all > 0 else 1.0
+
+    actual_beta_value_sum = 0.0
+    for h in holdings:
+        cv = float(h.current_value or 0.0)
+        if cv <= 0:
+            continue
+        meta = metadata_map.get(h.script)
+        is_ex = getattr(meta, 'is_excluded', False) if meta else False
+        if is_ex:
+            continue
+        
+        script_key = h.script.strip().upper()
+        in_excel = script_key in excel_map and excel_map[script_key]['beta'] is not None
+        in_db = meta is not None and meta.beta is not None
+        if in_excel or in_db:
+            actual_beta_value_sum += cv
+            
+    beta_coverage_pct = (actual_beta_value_sum / total_val_included * 100.0) if total_val_included > 0 else 0.0
+
+    return {
+        "holdings": holdings_list,
+        "market_cap_summary": cap_summary,
+        "sector_summary": sector_list,
+        "portfolio_beta": round(portfolio_beta, 3),
+        "nifty100_beta": 1.0,
+        "beta_coverage_pct": round(beta_coverage_pct, 2)
+    }
+
+
+class ExcludeRequest(BaseModel):
+    symbol: str
+    is_excluded: bool
+
+@router.put("/holdings-analysis/exclude")
+def toggle_holding_exclusion(
+    req: ExcludeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle a stock's exclusion from Market Cap / Sector charts."""
+    from models.stock_metadata import StockMetadata as SM
+    meta = db.query(SM).filter(SM.symbol == req.symbol).first()
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Metadata not found for {req.symbol}")
+    meta.is_excluded = req.is_excluded
+    db.commit()
+    return {"symbol": req.symbol, "is_excluded": req.is_excluded}
+
+
+class SectorOverrideRequest(BaseModel):
+    symbol: str
+    sector_override: str
+
+@router.put("/holdings-analysis/sector-override")
+def update_sector_override(
+    req: SectorOverrideRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Override the sector classification for a stock."""
+    from models.stock_metadata import StockMetadata as SM
+    meta = db.query(SM).filter(SM.symbol == req.symbol).first()
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Metadata not found for {req.symbol}")
+    # Empty string means clear the override
+    meta.sector_override = req.sector_override.strip() if req.sector_override.strip() else None
+    db.commit()
+    return {"symbol": req.symbol, "sector_override": meta.sector_override}
+
+
 @router.get("/analytics/capital-efficiency")
 def analytics_capital_efficiency(
     broker: Optional[str] = None,
