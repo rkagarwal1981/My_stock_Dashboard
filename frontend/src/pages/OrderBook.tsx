@@ -243,17 +243,25 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
   const summary = useMemo(() => {
     let purchases = 0;
     let sales = 0;
+    let buyOrdersCount = 0;
+    let sellOrdersCount = 0;
+    let totalPnl = 0;
+
     filteredOrders.forEach(o => {
       const amt = o.amount || 0;
+      totalPnl += o.pnl || 0;
       if (o.buy_sell === 'BUY') {
         purchases += amt;
+        buyOrdersCount++;
       } else if (o.buy_sell === 'SELL') {
         sales += amt;
+        sellOrdersCount++;
       }
     });
     const netFlow = sales - purchases;
     const netFlowPct = sales > 0 ? (netFlow / sales) * 100 : 0;
-    return { purchases, sales, netFlow, netFlowPct };
+
+    return { purchases, sales, netFlow, netFlowPct, totalPnl, buyOrdersCount, sellOrdersCount };
   }, [filteredOrders]);
 
   const brokers = ['all', 'MStock', 'Zerodha'];
@@ -279,23 +287,24 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
       </Box>
 
       {/* Summary Cards */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
+      <Box sx={{ display: 'flex', gap: 2, mb: 3, overflowX: 'auto' }}>
         {[
           { label: 'Total Purchase Value', val: fmt(summary.purchases), color: '#10b981' },
           { label: 'Total Sell Value', val: fmt(summary.sales), color: '#ef4444' },
           { label: 'Net Cash Flow', val: `${summary.netFlow >= 0 ? '+' : ''}${fmt(summary.netFlow)}`, color: summary.netFlow >= 0 ? '#10b981' : '#ef4444' },
           { label: '%age of Net Cash Flow', val: `${summary.netFlowPct >= 0 ? '+' : ''}${summary.netFlowPct.toFixed(2)}%`, color: summary.netFlowPct >= 0 ? '#10b981' : '#ef4444' },
+          { label: 'P&L', val: `${summary.totalPnl >= 0 ? '+' : ''}${fmt(summary.totalPnl)}`, color: summary.totalPnl >= 0 ? '#10b981' : '#ef4444' },
+          { label: '# of Buy Order', val: summary.buyOrdersCount.toLocaleString('en-IN'), color: '#10b981' },
+          { label: '# of Sell Order', val: summary.sellOrdersCount.toLocaleString('en-IN'), color: '#ef4444' },
         ].map(c => (
-          <Grid size={{ xs: 12, sm: 6, md: 3 }} key={c.label}>
-            <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
-              <CardContent sx={{ p: 2 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{c.label}</Typography>
-                <Typography variant="h6" sx={{ fontWeight: 700, mt: 0.5, color: c.color }}>{c.val}</Typography>
-              </CardContent>
-            </Card>
-          </Grid>
+          <Card key={c.label} sx={{ flex: 1, minWidth: 0, background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
+            <CardContent sx={{ p: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, fontSize: { xs: '9px', md: '11px' }, whiteSpace: 'nowrap', display: 'block' }}>{c.label}</Typography>
+              <Typography variant="h6" sx={{ fontWeight: 700, mt: 0.5, color: c.color, fontSize: { xs: '14px', md: '16px' } }}>{c.val}</Typography>
+            </CardContent>
+          </Card>
         ))}
-      </Grid>
+      </Box>
 
       {/* Broker Tabs */}
       <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)} sx={{ mb: 2, borderBottom: '1px solid #2a2e43' }}>

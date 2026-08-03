@@ -69,57 +69,75 @@ const fmtMonth = (m: string) => {
   return d.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
 };
 
-// ─── Churn bucket config & remapper ───────────────────────────────────────────
+// ─── Shared 9-bucket bin config & remapper ─────────────────────────────────
+//  Used by both Stock Churn and Unsettled Transactions Ageing widgets.
 
-/** Canonical 7-bucket sequence for the Stock Churn histogram */
-const NEW_CHURN_BINS = ['0-7d', '8-15d', '16-30d', '1m', '2m', '3m', '>4mnth'] as const;
+/** Canonical 9-bucket sequence (shared by Churn and Ageing histograms) */
+const NEW_CHURN_BINS = ['0-7d', '8-15d', '16-30d', '1m', '2m', '3m', '4m', '5m', '>6mnth'] as const;
 type ChurnBin = typeof NEW_CHURN_BINS[number];
 
 /**
- * remapChurnBins – normalises any raw API bin-label format into the
- * canonical 7-bucket sequence. Multiple API buckets may collapse into one;
+ * remapChurnBins – normalises any raw API bin-label into the canonical
+ * 9-bucket sequence. Multiple API buckets may collapse into one;
  * counts are accumulated so no data is lost.
  *
  * Bucket day ranges (must match backend exactly):
- *   0-7d    :  0 –  7 days
- *   8-15d   :  8 – 15 days
- *   16-30d  : 16 – 30 days
- *   1m      : 31 – 60 days
- *   2m      : 61 – 90 days
- *   3m      : 91 –120 days
- *   >4mnth  : 121+ days
+ *   0-7d    :   0 –   7 days
+ *   8-15d   :   8 –  15 days
+ *   16-30d  :  16 –  30 days
+ *   1m      :  31 –  60 days
+ *   2m      :  61 –  90 days
+ *   3m      :  91 – 120 days
+ *   4m      : 121 – 150 days
+ *   5m      : 151 – 170 days
+ *   >6mnth  : 171+ days
  */
-function remapChurnBins(rawBins: any[]): { bin_label: ChurnBin; count: number }[] {
-  const acc: Record<ChurnBin, number> = {
-    '0-7d': 0, '8-15d': 0, '16-30d': 0,
-    '1m': 0, '2m': 0, '3m': 0, '>4mnth': 0,
+function remapChurnBins(rawBins: any[]): { bin_label: ChurnBin; count: number; total_value: number }[] {
+  const acc: Record<ChurnBin, { count: number; total_value: number }> = {
+    '0-7d': { count: 0, total_value: 0 },
+    '8-15d': { count: 0, total_value: 0 },
+    '16-30d': { count: 0, total_value: 0 },
+    '1m': { count: 0, total_value: 0 },
+    '2m': { count: 0, total_value: 0 },
+    '3m': { count: 0, total_value: 0 },
+    '4m': { count: 0, total_value: 0 },
+    '5m': { count: 0, total_value: 0 },
+    '>6mnth': { count: 0, total_value: 0 },
   };
 
   for (const bin of (rawBins || [])) {
     const lbl: string = String(bin.bin_label ?? '').trim();
     const cnt: number = Number(bin.count) || 0;
+    const val: number = Number(bin.total_value) || 0;
 
-    // Exact match first (backend already sends canonical labels)
+    let target: ChurnBin | null = null;
     if ((NEW_CHURN_BINS as readonly string[]).includes(lbl)) {
-      acc[lbl as ChurnBin] += cnt;
-      continue;
+      target = lbl as ChurnBin;
+    } else {
+      const l = lbl.toLowerCase();
+      if      (/^(0[-]7|<\s*1\s*w|<\s*7\s*d|same.?week)/i.test(l))  target = '0-7d';
+      else if (/^(8[-]15|1[-]2\s*w)/i.test(l))                        target = '8-15d';
+      else if (/^(16[-]30|2[-]4\s*w|3[-]4\s*w)/i.test(l))            target = '16-30d';
+      else if (/^(1\s*m(?:onth)?(?!\w)|31[-]60)/i.test(l))            target = '1m';
+      else if (/^(2\s*m(?:onth)?(?!\w)|61[-]90)/i.test(l))            target = '2m';
+      else if (/^(3\s*m(?:onth)?(?!\w)|91[-]120)/i.test(l))           target = '3m';
+      else if (/^(4\s*m(?:onth)?(?!\w)|121[-]150)/i.test(l))          target = '4m';
+      else if (/^(5\s*m(?:onth)?(?!\w)|151[-]170)/i.test(l))          target = '5m';
+      else                                                             target = '>6mnth';
     }
 
-    // Fuzzy match legacy / alternative backend formats
-    const l = lbl.toLowerCase();
-    if      (/^(0[-]7|<\s*1\s*w|<\s*7\s*d|same.?week)/i.test(l))  acc['0-7d']   += cnt;
-    else if (/^(8[-]15|1[-]2\s*w)/i.test(l))                        acc['8-15d']  += cnt;
-    else if (/^(16[-]30|2[-]4\s*w|3[-]4\s*w)/i.test(l))            acc['16-30d'] += cnt;
-    else if (/^(1\s*m(?:onth)?(?!\w)|31[-]60)/i.test(l))            acc['1m']     += cnt;
-    else if (/^(2\s*m(?:onth)?(?!\w)|61[-]90)/i.test(l))            acc['2m']     += cnt;
-    else if (/^(3\s*m(?:onth)?(?!\w)|91[-]120)/i.test(l))           acc['3m']     += cnt;
-    else                                                              acc['>4mnth'] += cnt;
+    if (target) {
+      acc[target].count += cnt;
+      acc[target].total_value += val;
+    }
   }
 
-  return NEW_CHURN_BINS.map(b => ({ bin_label: b, count: acc[b] }));
+  return NEW_CHURN_BINS.map(b => ({ bin_label: b, count: acc[b].count, total_value: acc[b].total_value }));
 }
 
+
 // ─── Custom SVG label renderers ───────────────────────────────────────────────
+
 
 /** Renders fmtShortNoDecimals value above each P&L bar. Skipped for zero-value bars. */
 const PnlBarLabel = (props: any) => {
@@ -139,10 +157,12 @@ const PnlBarLabel = (props: any) => {
  * totalChurnRef is set by the chart's parent just before rendering.
  */
 let _churnTotal = 0; // module-level ref updated before each render
+let _churnMode: 'volume' | 'value' = 'volume';
 const ChurnBarLabel = (props: any) => {
   const { x, y, width, height, value } = props;
   if (!value) return null;
   const pct = _churnTotal > 0 ? ((value / _churnTotal) * 100).toFixed(1) : '0.0';
+  const displayVal = _churnMode === 'volume' ? String(value) : `₹${fmtShort(value)}`;
   return (
     <text
       x={x + width + 10}
@@ -152,7 +172,28 @@ const ChurnBarLabel = (props: any) => {
       fontSize={12}
       fontWeight={600}
     >
-      {`${value} | ${pct}%`}
+      {`${displayVal} | ${pct}%`}
+    </text>
+  );
+};
+
+let _ageingTotal = 0; // module-level ref for Unsettled Ageing chart
+let _ageingMode: 'volume' | 'value' = 'volume';
+const AgeingBarLabel = (props: any) => {
+  const { x, y, width, height, value } = props;
+  if (!value) return null;
+  const pct = _ageingTotal > 0 ? ((value / _ageingTotal) * 100).toFixed(1) : '0.0';
+  const displayVal = _ageingMode === 'volume' ? String(value) : `₹${fmtShort(value)}`;
+  return (
+    <text
+      x={x + width + 10}
+      y={y + height / 2 + 5}
+      textAnchor="start"
+      fill="rgba(255,255,255,0.90)"
+      fontSize={12}
+      fontWeight={600}
+    >
+      {`${displayVal} | ${pct}%`}
     </text>
   );
 };
@@ -238,8 +279,9 @@ const Analytics: React.FC = () => {
   const [pnlData, setPnlData]         = useState<any[]>([]);
   const [pnlLoading, setPnlLoading]   = useState(true);
 
-  const [churnData, setChurnData]       = useState<any>({ bins: [], total: 0 });
+  const [churnData, setChurnData]       = useState<any>({ bins: [], total: 0, total_value: 0 });
   const [churnLoading, setChurnLoading] = useState(true);
+  const [churnMode, setChurnMode]       = useState<'volume' | 'value'>('volume');
   
   // Lifted global month range master filter state
   const [monthFrom, setMonthFrom] = useState<string>(() => localStorage.getItem('monthFrom') || '');
@@ -253,6 +295,11 @@ const Analytics: React.FC = () => {
 
   const [effData, setEffData]             = useState<any[]>([]);
   const [effLoading, setEffLoading]       = useState(true);
+
+  // ── Unsettled Ageing widget state ─────────────────────────────────────────
+  const [ageingData, setAgeingData]       = useState<any>({ bins: [], total: 0, total_value: 0 });
+  const [ageingLoading, setAgeingLoading] = useState(true);
+  const [ageingMode, setAgeingMode]       = useState<'volume' | 'value'>('volume');
 
 
 
@@ -285,7 +332,7 @@ const Analytics: React.FC = () => {
       }
       const res = await axios.get('/api/analytics/churn', { params });
       setChurnData(res.data);
-    } catch { setChurnData({ bins: [], total: 0 }); } finally { setChurnLoading(false); }
+    } catch { setChurnData({ bins: [], total: 0, total_value: 0 }); } finally { setChurnLoading(false); }
   }, [brokerParam, monthFrom, monthTo]);
 
   const fetchReturn = useCallback(async () => {
@@ -312,6 +359,22 @@ const Analytics: React.FC = () => {
     } catch { setEffData([]); } finally { setEffLoading(false); }
   }, [brokerParam]);
 
+  const fetchUnsettledAgeing = useCallback(async () => {
+    setAgeingLoading(true);
+    try {
+      const params: any = {};
+      if (brokerParam) params.broker = brokerParam;
+      if (monthTo) {
+        // Use last day of the selected 'to' month as the evaluation date
+        const [y, m] = monthTo.split('-').map(Number);
+        const lastDay = new Date(y, m, 0).getDate();
+        params.date_to = `${monthTo}-${String(lastDay).padStart(2, '0')}`;
+      }
+      const res = await axios.get('/api/analytics/unsettled-ageing', { params });
+      setAgeingData(res.data);
+    } catch { setAgeingData({ bins: [], total: 0, total_value: 0 }); } finally { setAgeingLoading(false); }
+  }, [brokerParam, monthTo]);
+
   // ── Effects ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -320,9 +383,10 @@ const Analytics: React.FC = () => {
     fetchReturn();
     fetchSector();
     fetchEfficiency();
+    fetchUnsettledAgeing();
   }, [brokerParam]);
 
-  useEffect(() => { fetchChurn(); }, [monthFrom, monthTo]);
+  useEffect(() => { fetchChurn(); fetchUnsettledAgeing(); }, [monthFrom, monthTo]);
 
   // ── Derived / formatted data ──────────────────────────────────────────────
 
@@ -423,7 +487,8 @@ const Analytics: React.FC = () => {
   /** Churn bins normalised to the canonical 7-bucket sequence */
   const churnBinsRemapped = remapChurnBins(churnData.bins || []);
 
-
+  /** Ageing bins — 9-bucket sequence with 4m / 5m / >6mnth (shared remapper) */
+  const ageingBinsRemapped = remapChurnBins(ageingData.bins || []);
 
   // ── Summary KPIs ──────────────────────────────────────────────────────────
 
@@ -431,6 +496,9 @@ const Analytics: React.FC = () => {
   const totalLosses = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.losses || 0), 0), [filteredPnl]);
   const netPnl      = React.useMemo(() => totalGains + totalLosses, [totalGains, totalLosses]);
   const totalChurn  = churnData.total || 0;
+  const totalChurnValue = churnData.total_value || 0;
+  const totalAgeing = ageingData.total || 0;
+  const totalAgeingValue = ageingData.total_value || 0;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -520,7 +588,7 @@ const Analytics: React.FC = () => {
       </Box>
 
       {/* ═══════════════════════════════════════════════════════════════════
-          Row 1 — Monthly P&L (55%)  +  Churn Histogram (45%)
+          Row 1 — Monthly Realized P&L (left) | Monthly Portfolio Return (right)
       ══════════════════════════════════════════════════════════════════════ */}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '55fr 45fr' }, gap: 2, mb: 2 }}>
 
@@ -585,68 +653,7 @@ const Analytics: React.FC = () => {
           )}
         </ChartCard>
 
-        {/* Widget 2 — Stock Churn Histogram */}
-        {(() => {
-          // Update module-level total for ChurnBarLabel
-          _churnTotal = churnData.total || 0;
-
-          return (
-            <ChartCard
-              title="Stock Churn"
-              subtitle="Holding Period Distribution (LIFO)"
-              icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />}
-            >
-              {churnLoading ? <Spinner /> : churnBinsRemapped.every(b => b.count === 0) ? (
-                <EmptyState text="No closed positions in selected date range." />
-              ) : (
-                <>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-                    <Chip label={`${churnData.total} closed positions`} size="small"
-                      sx={{ bgcolor: 'rgba(139,92,246,0.1)', color: '#8b5cf6', fontSize: 11, fontWeight: 600 }} />
-                  </Box>
-                  {/* right margin 120 gives the outside label enough room */}
-                  <ResponsiveContainer width="100%" height={255}>
-                    <BarChart data={churnBinsRemapped} layout="vertical" margin={{ top: 0, right: 120, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" horizontal={false} />
-                      <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
-                      <YAxis type="category" dataKey="bin_label" tick={{ fill: '#94a3b8', fontSize: 12 }} width={56} axisLine={false} tickLine={false} />
-                      <Tooltip
-                        content={({ active, payload }) => {
-                          if (!active || !payload?.length) return null;
-                          const d = payload[0]?.payload;
-                          const pct = _churnTotal > 0 ? ((d?.count / _churnTotal) * 100).toFixed(1) : '0.0';
-                          return (
-                            <Box sx={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 2, p: 1.5, minWidth: 150 }}>
-                              <Typography variant="body2" sx={{ color: '#f8fafc', fontWeight: 700, fontSize: '15.6px', mb: 0.5 }}>
-                                {d?.bin_label}
-                              </Typography>
-                              <Typography variant="body2" sx={{ color: '#cbd5e1', fontSize: '15.6px' }}>
-                                Positions: {d?.count} ({pct}%)
-                              </Typography>
-                            </Box>
-                          );
-                        }}
-                      />
-                      <Bar dataKey="count" name="Positions" radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
-                        {churnBinsRemapped.map((_: any, i: number) => {
-                          const colors = ['#2962ff', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
-                          return <Cell key={i} fill={colors[i % colors.length]} />;
-                        })}
-                        <LabelList content={<ChurnBarLabel />} />
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </>
-              )}
-            </ChartCard>
-          );
-        })()}
-      </Box>
-
-      {/* ═══════════════════════════════════════════════════════════════════
-          Row 2 — Monthly Portfolio Return & Rotation Efficiency Trend
-      ══════════════════════════════════════════════════════════════════════ */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
+        {/* Widget 2 — Monthly Portfolio Return */}
         <ChartCard
           title="Monthly Portfolio Return"
           subtitle="Absolute realized profit % (profit / buying price)"
@@ -656,7 +663,7 @@ const Analytics: React.FC = () => {
             <EmptyState text="No settlement data available for return calculation." />
           ) : (
             /* top margin 28 prevents ReturnLineLabel text from clipping */
-            <ResponsiveContainer width="100%" height={290}>
+            <ResponsiveContainer width="100%" height={300}>
               <LineChart data={returnFormatted} margin={{ top: 28, right: 20, left: 10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" vertical={false} />
                 <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
@@ -700,8 +707,209 @@ const Analytics: React.FC = () => {
             </ResponsiveContainer>
           )}
         </ChartCard>
+      </Box>
 
-        {/* Widget B — Rotation Efficiency Trend */}
+      {/* ═══════════════════════════════════════════════════════════════════
+          Row 2 — Stock Churn (left) | Unsettled Transactions Ageing (right)
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
+
+        {/* Widget 3 — Stock Churn Histogram */}
+        {(() => {
+          // Update module-level total for ChurnBarLabel
+          _churnTotal = churnMode === 'volume' ? (churnData.total || 0) : (churnData.total_value || 0);
+          _churnMode = churnMode;
+
+          return (
+            <ChartCard
+              title="Stock Churn"
+              subtitle="Holding Period Distribution (LIFO)"
+              icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />}
+              extra={
+                <RadioGroup
+                  row
+                  value={churnMode}
+                  onChange={(e) => setChurnMode(e.target.value as 'volume' | 'value')}
+                  sx={{
+                    backgroundColor: 'rgba(255,255,255,0.05)',
+                    borderRadius: 2,
+                    p: '2px 8px',
+                    '& .MuiFormControlLabel-label': {
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: '#94a3b8',
+                    },
+                    '& .Mui-checked + .MuiFormControlLabel-label': {
+                      color: '#f8fafc',
+                    },
+                    '& .MuiRadio-root': {
+                      padding: '4px',
+                      color: '#475569',
+                      '&.Mui-checked': {
+                        color: '#8b5cf6',
+                      }
+                    }
+                  }}
+                >
+                  <FormControlLabel value="volume" control={<Radio size="small" />} label="Volume" sx={{ mr: 1.5 }} />
+                  <FormControlLabel value="value" control={<Radio size="small" />} label="Value" sx={{ mr: 0 }} />
+                </RadioGroup>
+              }
+            >
+              {churnLoading ? <Spinner /> : churnBinsRemapped.every(b => b.count === 0) ? (
+                <EmptyState text="No closed positions in selected date range." />
+              ) : (
+                <>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                    <Chip label={churnMode === 'volume' ? `${totalChurn} closed positions` : `${fmt(totalChurnValue)} total value`} size="small"
+                      sx={{ bgcolor: 'rgba(139,92,246,0.1)', color: '#8b5cf6', fontSize: 11, fontWeight: 600 }} />
+                  </Box>
+                  {/* right margin 120 gives the outside label enough room */}
+                  <ResponsiveContainer width="100%" height={255}>
+                    <BarChart data={churnBinsRemapped} layout="vertical" margin={{ top: 0, right: 120, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" horizontal={false} />
+                      <XAxis type="number" tickFormatter={churnMode === 'volume' ? undefined : fmtShort} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="bin_label" tick={{ fill: '#94a3b8', fontSize: 12 }} width={56} axisLine={false} tickLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0]?.payload;
+                          const val = churnMode === 'volume' ? d?.count : d?.total_value;
+                          const pct = _churnTotal > 0 ? ((val / _churnTotal) * 100).toFixed(1) : '0.0';
+                          const labelValue = churnMode === 'volume' ? `Positions: ${d?.count}` : `Value: ${fmt(d?.total_value || 0)}`;
+                          return (
+                            <Box sx={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 2, p: 1.5, minWidth: 150 }}>
+                              <Typography variant="body2" sx={{ color: '#f8fafc', fontWeight: 700, fontSize: '15.6px', mb: 0.5 }}>
+                                {d?.bin_label}
+                              </Typography>
+                              <Typography variant="body2" sx={{ color: '#cbd5e1', fontSize: '15.6px' }}>
+                                {labelValue} ({pct}%)
+                              </Typography>
+                            </Box>
+                          );
+                        }}
+                      />
+                      <Bar dataKey={churnMode === 'volume' ? "count" : "total_value"} name={churnMode === 'volume' ? "Positions" : "Value"} radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
+                        {churnBinsRemapped.map((_: any, i: number) => {
+                          const colors = ['#2962ff', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+                          return <Cell key={i} fill={colors[i % colors.length]} />;
+                        })}
+                        <LabelList content={<ChurnBarLabel />} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </>
+              )}
+            </ChartCard>
+          );
+        })()}
+
+        {/* Widget 4 — Unsettled Transactions Ageing */}
+        {(() => {
+          // Update module-level total for AgeingBarLabel
+          _ageingTotal = ageingMode === 'volume' ? (ageingData.total || 0) : (ageingData.total_value || 0);
+          _ageingMode = ageingMode;
+          const ageingColors = ['#10b981', '#06b6d4', '#2962ff', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+          return (
+            <ChartCard
+              title="Unsettled Transactions Ageing"
+              subtitle="Open BUY position age distribution (LIFO)"
+              icon={<TrendingUpIcon sx={{ fontSize: 18, color: '#f59e0b' }} />}
+              extra={
+                <RadioGroup
+                  row
+                  value={ageingMode}
+                  onChange={(e) => setAgeingMode(e.target.value as 'volume' | 'value')}
+                  sx={{
+                    backgroundColor: 'rgba(255,255,255,0.05)',
+                    borderRadius: 2,
+                    p: '2px 8px',
+                    '& .MuiFormControlLabel-label': {
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: '#94a3b8',
+                    },
+                    '& .Mui-checked + .MuiFormControlLabel-label': {
+                      color: '#f8fafc',
+                    },
+                    '& .MuiRadio-root': {
+                      padding: '4px',
+                      color: '#475569',
+                      '&.Mui-checked': {
+                        color: '#f59e0b',
+                      }
+                    }
+                  }}
+                >
+                  <FormControlLabel value="volume" control={<Radio size="small" />} label="Volume" sx={{ mr: 1.5 }} />
+                  <FormControlLabel value="value" control={<Radio size="small" />} label="Value" sx={{ mr: 0 }} />
+                </RadioGroup>
+              }
+            >
+              {ageingLoading ? <Spinner /> : ageingBinsRemapped.every(b => b.count === 0) ? (
+                <EmptyState text="No unsettled BUY positions found." />
+              ) : (
+                <>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                    <Chip
+                      label={ageingMode === 'volume' ? `${totalAgeing} open lots` : `${fmt(totalAgeingValue)} total value`}
+                      size="small"
+                      sx={{ bgcolor: 'rgba(245,158,11,0.12)', color: '#f59e0b', fontSize: 11, fontWeight: 600 }}
+                    />
+                    {monthTo && (
+                      <Chip
+                        label={`As of ${fmtMonth(monthTo)}`}
+                        size="small"
+                        sx={{ bgcolor: 'rgba(255,255,255,0.06)', color: '#94a3b8', fontSize: 11 }}
+                      />
+                    )}
+                  </Box>
+                  <ResponsiveContainer width="100%" height={255}>
+                    <BarChart data={ageingBinsRemapped} layout="vertical" margin={{ top: 0, right: 120, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" horizontal={false} />
+                      <XAxis type="number" tickFormatter={ageingMode === 'volume' ? undefined : fmtShort} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="bin_label" tick={{ fill: '#94a3b8', fontSize: 12 }} width={56} axisLine={false} tickLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0]?.payload;
+                          const val = ageingMode === 'volume' ? d?.count : d?.total_value;
+                          const pct = _ageingTotal > 0 ? ((val / _ageingTotal) * 100).toFixed(1) : '0.0';
+                          const labelValue = ageingMode === 'volume' ? `Open Lots: ${d?.count}` : `Value: ${fmt(d?.total_value || 0)}`;
+                          return (
+                            <Box sx={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 2, p: 1.5, minWidth: 180 }}>
+                              <Typography variant="body2" sx={{ color: '#f8fafc', fontWeight: 700, fontSize: 13, mb: 0.5 }}>
+                                {d?.bin_label} — Ageing Bucket
+                              </Typography>
+                              <Typography variant="body2" sx={{ color: '#fbbf24', fontSize: 13 }}>
+                                {labelValue} ({pct}%)
+                              </Typography>
+                            </Box>
+                          );
+                        }}
+                      />
+                      <Bar dataKey={ageingMode === 'volume' ? "count" : "total_value"} name={ageingMode === 'volume' ? "Open Lots" : "Value"} radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
+                        {ageingBinsRemapped.map((_: any, i: number) => (
+                          <Cell key={i} fill={ageingColors[i % ageingColors.length]} />
+                        ))}
+                        <LabelList content={<AgeingBarLabel />} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </>
+              )}
+            </ChartCard>
+          );
+        })()}
+      </Box>
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          Row 3 — Rotation Efficiency (left) | Monthly Trading Averages (right)
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
+
+        {/* Widget 5 — Rotation Efficiency Trend */}
         <ChartCard
           title="Rotation Efficiency"
           subtitle="Monthly profit / total volume %"
@@ -765,14 +973,8 @@ const Analytics: React.FC = () => {
             </ResponsiveContainer>
           )}
         </ChartCard>
-      </Box>
 
-      {/* ═══════════════════════════════════════════════════════════════════
-          Row 2c — Monthly Trading Averages and Total Volumes/Profit Trend
-      ══════════════════════════════════════════════════════════════════════ */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
-
-        {/* Widget 1: Monthly Trading Averages Trend */}
+        {/* Widget 6 — Monthly Trading Averages */}
         <ChartCard
           title="Monthly Trading Averages"
           subtitle="Daily average buy and sell per month"
@@ -805,8 +1007,14 @@ const Analytics: React.FC = () => {
             </ResponsiveContainer>
           )}
         </ChartCard>
+      </Box>
 
-        {/* Widget 2: Monthly Total Volumes and Profit Trend */}
+      {/* ═══════════════════════════════════════════════════════════════════
+          Row 4 — Monthly Total Volumes and Profit (full width)
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2, mb: 2 }}>
+
+        {/* Widget 7: Monthly Total Volumes and Profit Trend */}
         <ChartCard
           title="Monthly Total Volumes and Profit"
           subtitle="Monthly total sell (left axis) vs realized profit (right axis)"

@@ -1648,6 +1648,18 @@ def _apply_broker_filter(query, broker: Optional[str]):
     return query
 
 
+def _apply_analytics_filters(query, model=Transaction):
+    from sqlalchemy import not_
+    return query.filter(
+        not_(model.script.ilike('%PE-EQ')),
+        not_(model.script.ilike('%CE-EQ')),
+        not_(model.script.ilike('%ETF-EQ')),
+        not_(model.script.ilike('%FUT')),
+        not_(model.script.ilike('%BEES-EQ')),
+        not_(model.script.ilike('SGB%'))
+    )
+
+
 @router.get("/analytics/monthly-pnl")
 def analytics_monthly_pnl(
     broker: Optional[str] = None,
@@ -1661,6 +1673,7 @@ def analytics_monthly_pnl(
     query = db.query(Transaction)
     if broker and broker.lower() != "all":
         query = query.filter(Transaction.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Transaction)
     txs = query.all()
 
     settlement = compute_lifo_settlement(txs)
@@ -1708,13 +1721,15 @@ def analytics_churn(
     [{bin_label: str, count: int, min_days: int, max_days: int}]
     """
     bins = [
-        ("0-7d",   0,    7),
-        ("8-15d",  8,   15),
-        ("16-30d", 16,  30),
-        ("1m",     31,  60),
-        ("2m",     61,  90),
-        ("3m",     91, 120),
-        (">4mnth", 121, 99999),
+        ("0-7d",    0,    7),
+        ("8-15d",   8,   15),
+        ("16-30d", 16,   30),
+        ("1m",     31,   60),
+        ("2m",     61,   90),
+        ("3m",     91,  120),
+        ("4m",    121,  150),
+        ("5m",    151,  170),
+        (">6mnth", 171, 99999),
     ]
 
     dt_from = None
@@ -1738,6 +1753,7 @@ def analytics_churn(
         sell_query = sell_query.filter(Transaction.transaction_date >= dt_from)
     if dt_to:
         sell_query = sell_query.filter(Transaction.transaction_date <= dt_to)
+    sell_query = _apply_analytics_filters(sell_query, Transaction)
 
     scripts = [r[0] for r in sell_query.distinct().all()]
 
@@ -1753,6 +1769,7 @@ def analytics_churn(
         query = query.filter(Transaction.broker.ilike(broker))
     if dt_to:
         query = query.filter(Transaction.transaction_date <= dt_to)
+    query = _apply_analytics_filters(query, Transaction)
     
     txs = query.with_entities(
         Transaction.id,
@@ -1772,7 +1789,7 @@ def analytics_churn(
     settlement = compute_lifo_settlement(txs)
 
     # 4. Filter settlement rows to match the sell date range
-    holding_days_list = []
+    positions_list = []  # list of (holding_days, sell_value)
     for row in settlement:
         if row.get("holding_days") is None:
             continue
@@ -1784,14 +1801,130 @@ def analytics_churn(
                 continue
             if dt_to and sd > dt_to:
                 continue
-        holding_days_list.append(int(row["holding_days"]))
+        days = int(row["holding_days"])
+        qty        = float(row.get("qty") or 0)
+        sell_price = float(row.get("average_of_price") or 0)
+        positions_list.append((days, qty * sell_price))
 
     result = []
     for label, lo, hi in bins:
-        count = sum(1 for d in holding_days_list if lo <= d <= hi)
-        result.append({"bin_label": label, "count": count, "min_days": lo, "max_days": hi if hi < 99999 else None})
+        bucket     = [(d, v) for d, v in positions_list if lo <= d <= hi]
+        count      = len(bucket)
+        total_val  = round(sum(v for _, v in bucket), 2)
+        result.append({
+            "bin_label":   label,
+            "count":       count,
+            "total_value": total_val,
+            "min_days":    lo,
+            "max_days":    hi if hi < 99999 else None,
+        })
 
-    return {"bins": result, "total": len(holding_days_list)}
+    all_val = round(sum(v for _, v in positions_list), 2)
+    return {"bins": result, "total": len(positions_list), "total_value": all_val}
+
+
+@router.get("/analytics/unsettled-ageing")
+def analytics_unsettled_ageing(
+    broker: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns binned ageing frequencies of LIFO-unsettled BUY positions.
+    [{bin_label: str, count: int, min_days: int, max_days: int}]
+    """
+    bins = [
+        ("0-7d",    0,    7),
+        ("8-15d",   8,   15),
+        ("16-30d", 16,   30),
+        ("1m",     31,   60),
+        ("2m",     61,   90),
+        ("3m",     91,  120),
+        ("4m",    121,  150),
+        ("5m",    151,  170),
+        (">6mnth", 171, 99999),
+    ]
+
+    dt_to = None
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+        except Exception:
+            pass
+    if not dt_to:
+        dt_to = datetime.now()
+
+    # 1. Fetch all unique scripts that have BUY transactions up to dt_to and broker
+    buy_query = db.query(Transaction.script).filter(Transaction.buy_sell == "BUY")
+    if broker and broker.lower() != "all":
+        buy_query = buy_query.filter(Transaction.broker.ilike(broker))
+    if dt_to:
+        buy_query = buy_query.filter(Transaction.transaction_date <= dt_to)
+    buy_query = _apply_analytics_filters(buy_query, Transaction)
+
+    scripts = [r[0] for r in buy_query.distinct().all()]
+
+    if not scripts:
+        return {
+            "bins": [{"bin_label": label, "count": 0, "min_days": lo, "max_days": hi if hi < 99999 else None} for label, lo, hi in bins],
+            "total": 0
+        }
+
+    # 2. Fetch all transactions for these scripts up to dt_to
+    query = db.query(Transaction).filter(Transaction.script.in_(scripts))
+    if broker and broker.lower() != "all":
+        query = query.filter(Transaction.broker.ilike(broker))
+    if dt_to:
+        query = query.filter(Transaction.transaction_date <= dt_to)
+    query = _apply_analytics_filters(query, Transaction)
+
+    txs = query.with_entities(
+        Transaction.id,
+        Transaction.script,
+        Transaction.broker,
+        Transaction.transaction_date,
+        Transaction.buy_sell,
+        Transaction.quantity,
+        Transaction.price,
+        Transaction.charges,
+        Transaction.net_amount,
+        Transaction.order_number,
+        Transaction.exchange
+    ).all()
+
+    # 3. Compute LIFO settlement
+    settlement = compute_lifo_settlement(txs)
+
+    # 4. Filter for unsettled BUYs and compute ageing
+    ageing_list = []  # list of (age_days, buy_value)
+    for row in settlement:
+        if row.get("comment") == "Unsettled" and row.get("buy_date") is not None:
+            bd = row["buy_date"]
+            if isinstance(bd, str):
+                bd = datetime.fromisoformat(bd)
+            age_days = (dt_to - bd).days
+            if age_days < 0:
+                age_days = 0
+            qty       = float(row.get("qty") or 0)
+            buy_price = float(row.get("price") or 0)
+            ageing_list.append((age_days, qty * buy_price))
+
+    result = []
+    for label, lo, hi in bins:
+        bucket    = [(d, v) for d, v in ageing_list if lo <= d <= hi]
+        count     = len(bucket)
+        total_val = round(sum(v for _, v in bucket), 2)
+        result.append({
+            "bin_label":   label,
+            "count":       count,
+            "total_value": total_val,
+            "min_days":    lo,
+            "max_days":    hi if hi < 99999 else None,
+        })
+
+    all_val = round(sum(v for _, v in ageing_list), 2)
+    return {"bins": result, "total": len(ageing_list), "total_value": all_val}
 
 
 @router.get("/analytics/monthly-return")
@@ -1810,6 +1943,7 @@ def analytics_monthly_return(
     query = db.query(Transaction)
     if broker and broker.lower() != "all":
         query = query.filter(Transaction.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Transaction)
     txs = query.all()
 
     settlement = compute_lifo_settlement(txs)
@@ -1923,6 +2057,7 @@ def analytics_sector_allocation(
     query = db.query(Holding)
     if broker and broker.lower() != "all":
         query = query.filter(Holding.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Holding)
     holdings = query.all()
 
     # Fetch all overrides
@@ -2319,6 +2454,7 @@ def analytics_tax_drag(
     query = db.query(Transaction)
     if broker and broker.lower() != "all":
         query = query.filter(Transaction.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Transaction)
     txs = query.all()
 
     def _tax(pnl: float, holding_days: int) -> float:
@@ -2378,6 +2514,7 @@ def analytics_volatility(
     query = db.query(Transaction)
     if broker and broker.lower() != "all":
         query = query.filter(Transaction.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Transaction)
     txs = query.all()
     settlement = compute_lifo_settlement(txs)
 

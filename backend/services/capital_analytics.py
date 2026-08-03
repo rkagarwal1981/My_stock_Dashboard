@@ -36,6 +36,16 @@ def _get_monthly_buy_sell(
         Transaction.buy_sell,
     )
 
+    from sqlalchemy import not_
+    query = query.filter(
+        not_(Transaction.script.ilike('%PE-EQ')),
+        not_(Transaction.script.ilike('%CE-EQ')),
+        not_(Transaction.script.ilike('%ETF-EQ')),
+        not_(Transaction.script.ilike('%FUT')),
+        not_(Transaction.script.ilike('%BEES-EQ')),
+        not_(Transaction.script.ilike('SGB%'))
+    )
+
     if broker and broker.lower() not in ("all", ""):
         query = query.filter(Transaction.broker.ilike(broker))
 
@@ -71,6 +81,16 @@ def _get_monthly_active_days(
         func.strftime('%Y-%m', Transaction.transaction_date)
     )
 
+    from sqlalchemy import not_
+    query = query.filter(
+        not_(Transaction.script.ilike('%PE-EQ')),
+        not_(Transaction.script.ilike('%CE-EQ')),
+        not_(Transaction.script.ilike('%ETF-EQ')),
+        not_(Transaction.script.ilike('%FUT')),
+        not_(Transaction.script.ilike('%BEES-EQ')),
+        not_(Transaction.script.ilike('SGB%'))
+    )
+
     if broker and broker.lower() not in ("all", ""):
         query = query.filter(Transaction.broker.ilike(broker))
 
@@ -87,6 +107,15 @@ def _get_monthly_realized_profit(
     Returns: { 'YYYY-MM': net_realized_pnl, ... }
     """
     query = db.query(Transaction)
+    from sqlalchemy import not_
+    query = query.filter(
+        not_(Transaction.script.ilike('%PE-EQ')),
+        not_(Transaction.script.ilike('%CE-EQ')),
+        not_(Transaction.script.ilike('%ETF-EQ')),
+        not_(Transaction.script.ilike('%FUT')),
+        not_(Transaction.script.ilike('%BEES-EQ')),
+        not_(Transaction.script.ilike('SGB%'))
+    )
     if broker and broker.lower() not in ("all", ""):
         query = query.filter(Transaction.broker.ilike(broker))
     txs = query.all()
