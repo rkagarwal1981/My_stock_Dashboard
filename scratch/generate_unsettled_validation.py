@@ -43,9 +43,21 @@ def main():
     print("Connecting to database...")
     db = SessionLocal()
     try:
-        # 1. Fetch all transactions from database
+        # 1. Fetch all transactions from database (ignoring SGB, FUT, PE, CE, ETF)
         print("Fetching transactions...")
-        txs = db.query(Transaction).order_by(
+        from sqlalchemy import not_
+        txs = db.query(Transaction).filter(
+            not_(Transaction.script.ilike('%PE-EQ')),
+            not_(Transaction.script.ilike('%CE-EQ')),
+            not_(Transaction.script.ilike('%ETF-EQ')),
+            not_(Transaction.script.ilike('%FUT')),
+            not_(Transaction.script.ilike('%BEES-EQ')),
+            not_(Transaction.script.ilike('SGB%')),
+            not_(Transaction.script.ilike('%CALL')),
+            not_(Transaction.script.ilike('%PUT')),
+            not_(Transaction.script.ilike('SMALCAP-EQ')),
+            not_(Transaction.script.ilike('ICICIB22-EQ'))
+        ).order_by(
             Transaction.transaction_date.asc(), Transaction.id.asc()
         ).all()
         if not txs:

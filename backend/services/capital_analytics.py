@@ -43,7 +43,11 @@ def _get_monthly_buy_sell(
         not_(Transaction.script.ilike('%ETF-EQ')),
         not_(Transaction.script.ilike('%FUT')),
         not_(Transaction.script.ilike('%BEES-EQ')),
-        not_(Transaction.script.ilike('SGB%'))
+        not_(Transaction.script.ilike('SGB%')),
+        not_(Transaction.script.ilike('%CALL')),
+        not_(Transaction.script.ilike('%PUT')),
+        not_(Transaction.script.ilike('SMALCAP-EQ')),
+        not_(Transaction.script.ilike('ICICIB22-EQ'))
     )
 
     if broker and broker.lower() not in ("all", ""):
@@ -88,7 +92,11 @@ def _get_monthly_active_days(
         not_(Transaction.script.ilike('%ETF-EQ')),
         not_(Transaction.script.ilike('%FUT')),
         not_(Transaction.script.ilike('%BEES-EQ')),
-        not_(Transaction.script.ilike('SGB%'))
+        not_(Transaction.script.ilike('SGB%')),
+        not_(Transaction.script.ilike('%CALL')),
+        not_(Transaction.script.ilike('%PUT')),
+        not_(Transaction.script.ilike('SMALCAP-EQ')),
+        not_(Transaction.script.ilike('ICICIB22-EQ'))
     )
 
     if broker and broker.lower() not in ("all", ""):
@@ -114,7 +122,11 @@ def _get_monthly_realized_profit(
         not_(Transaction.script.ilike('%ETF-EQ')),
         not_(Transaction.script.ilike('%FUT')),
         not_(Transaction.script.ilike('%BEES-EQ')),
-        not_(Transaction.script.ilike('SGB%'))
+        not_(Transaction.script.ilike('SGB%')),
+        not_(Transaction.script.ilike('%CALL')),
+        not_(Transaction.script.ilike('%PUT')),
+        not_(Transaction.script.ilike('SMALCAP-EQ')),
+        not_(Transaction.script.ilike('ICICIB22-EQ'))
     )
     if broker and broker.lower() not in ("all", ""):
         query = query.filter(Transaction.broker.ilike(broker))

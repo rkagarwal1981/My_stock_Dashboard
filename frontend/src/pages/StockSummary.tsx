@@ -410,6 +410,34 @@ const StockSummary: React.FC<StockSummaryProps> = ({
   const buyItems = useMemo(() => chartData.filter(d => d.buyQty > 0), [chartData]);
   const sellItems = useMemo(() => chartData.filter(d => d.sellQty > 0), [chartData]);
 
+  // Dynamic Y-axis domain for price mode.
+  // Floor = max(avgPrice / 2,  minPrice − avgPrice × 8%)
+  //   • "avgPrice / 2"        → user's proportional zoom anchor (e.g. Reliance ₹1300 → ₹650)
+  //   • "minPrice − avg×8%"   → tight band just below the actual lowest traded price
+  // Taking the HIGHER of the two prevents the axis from going unnecessarily low
+  // while still amplifying small price movements clearly.
+  // Ceiling = maxPrice + avg×3% so top labels have room.
+  const priceYDomain = useMemo(() => {
+    const prices = chartData.flatMap(d => [
+      d.buyPrice > 0 ? d.buyPrice : null,
+      d.sellPrice > 0 ? d.sellPrice : null,
+    ]).filter((p): p is number => p !== null);
+    if (prices.length === 0) return ['auto', 'auto'] as [string, string];
+
+    const minP  = Math.min(...prices);
+    const maxP  = Math.max(...prices);
+    const avgP  = prices.reduce((s, p) => s + p, 0) / prices.length;
+
+    // Two candidate floors — pick the one that results in a higher (tighter) start
+    const floorHalfAvg   = avgP / 2;                 // user's idea: half of average price
+    const floorTightBand = minP - avgP * 0.08;        // 8% of avg below the lowest price
+
+    const yMin = Math.floor(Math.max(floorHalfAvg, floorTightBand));
+    const yMax = Math.ceil(maxP + avgP * 0.03);       // 3% headroom above highest price
+
+    return [yMin, yMax] as [number, number];
+  }, [chartData]);
+
   const calculateRowReturn = (r: any) => {
     const buyPrice = Number(r.price || 0);
     const qty = Number(r.qty ?? r.sum_of_qty ?? 0);
@@ -733,6 +761,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                   tick={{ fill: '#94a3b8', fontSize: 11 }}
                 />
                 <YAxis
+                  domain={chartMode === 'price' ? priceYDomain : [0, 'auto']}
                   label={{
                     value: chartMode === 'qty' ? 'Shares (Qty)' : 'Price (₹)',
                     angle: -90,
@@ -742,6 +771,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                   }}
                   tick={{ fill: '#94a3b8', fontSize: 11 }}
                   tickFormatter={chartMode === 'price' ? (v) => `₹${Math.round(v).toLocaleString('en-IN')}` : undefined}
+                  width={70}
                 />
                 <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
                 {chartMode === 'qty' ? (

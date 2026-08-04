@@ -1656,7 +1656,11 @@ def _apply_analytics_filters(query, model=Transaction):
         not_(model.script.ilike('%ETF-EQ')),
         not_(model.script.ilike('%FUT')),
         not_(model.script.ilike('%BEES-EQ')),
-        not_(model.script.ilike('SGB%'))
+        not_(model.script.ilike('SGB%')),
+        not_(model.script.ilike('%CALL')),
+        not_(model.script.ilike('%PUT')),
+        not_(model.script.ilike('SMALCAP-EQ')),
+        not_(model.script.ilike('ICICIB22-EQ'))
     )
 
 
@@ -1989,6 +1993,209 @@ def analytics_monthly_return(
     ], key=lambda x: x["month"])
 
     return result
+
+
+@router.get("/analytics/expenses-interest")
+def analytics_expenses_interest(
+    broker: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Monthly Expenses & Interest metrics, including MTF interest, DP charges, Pledge charges,
+    Brokerage, and Taxes & STT. Calculates Actual Net Realized Profit after deducting expenses.
+    Supports MStock (ledger + tax P&L) and Zerodha (taxpnl xlsx + Interest Statement CSV).
+    """
+    import os
+    from services.expenses_parser import (
+        parse_mstock_ledger, parse_mstock_tax_pnl,
+        parse_zerodha_other_debits, parse_zerodha_tradewise,
+        parse_zerodha_interest_statement,
+    )
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    expense_dir = os.path.join(root_dir, "Expense")
+
+    # ── MStock files ───────────────────────────────────────────
+    ledger_path       = os.path.join(root_dir, "MA108170_Ledger_Report.xlsx")
+    tax_pnl_path      = os.path.join(root_dir, "Tax_PNL_mstock.xlsx")
+    ledger_2526_path  = os.path.join(root_dir, "MA108170_Ledger_Report (25-26).xlsx")
+    tax_pnl_2526_path = os.path.join(root_dir, "Tax_PNL_Mstock (25-26).xlsx")
+
+    ledger_exists      = os.path.exists(ledger_path)
+    tax_pnl_exists     = os.path.exists(tax_pnl_path)
+    ledger_2526_exists = os.path.exists(ledger_2526_path)
+    tax_pnl_2526_exists = os.path.exists(tax_pnl_2526_path)
+
+    mstock_ledger     = parse_mstock_ledger(ledger_path)      if ledger_exists      else {}
+    mstock_tax        = parse_mstock_tax_pnl(tax_pnl_path)    if tax_pnl_exists     else {}
+    mstock_ledger_2526 = parse_mstock_ledger(ledger_2526_path) if ledger_2526_exists else {}
+    mstock_tax_2526   = parse_mstock_tax_pnl(tax_pnl_2526_path) if tax_pnl_2526_exists else {}
+
+    for m, entry in mstock_ledger_2526.items():
+        if m in mstock_ledger:
+            mstock_ledger[m]["mtf_interest"] = round(mstock_ledger[m]["mtf_interest"] + entry.get("mtf_interest", 0.0), 2)
+            mstock_ledger[m]["dp_charges"]   = round(mstock_ledger[m]["dp_charges"]   + entry.get("dp_charges",   0.0), 2)
+            mstock_ledger[m]["mtf_position"] = max(mstock_ledger[m]["mtf_position"], entry.get("mtf_position", 0.0))
+        else:
+            mstock_ledger[m] = entry
+
+    for m, entry in mstock_tax_2526.items():
+        if m in mstock_tax:
+            mstock_tax[m]["brokerage"]    = round(mstock_tax[m]["brokerage"]    + entry.get("brokerage",    0.0), 2)
+            mstock_tax[m]["tax_other_stt"] = round(mstock_tax[m]["tax_other_stt"] + entry.get("tax_other_stt", 0.0), 2)
+        else:
+            mstock_tax[m] = entry
+
+    # ── Zerodha files ──────────────────────────────────────────
+    z_taxpnl_2526 = os.path.join(expense_dir, "taxpnl-RIM544-2025_2026.xlsx")
+    z_taxpnl_2627 = os.path.join(expense_dir, "taxpnl-RIM544-2026_2027.xlsx")
+    z_int_2526    = os.path.join(expense_dir, "RIM544 - Interest Statement 2025-2026.csv")
+    z_int_2627    = os.path.join(expense_dir, "RIM544 - Interest Statement 2026-2027.csv")
+
+    zerodha_files_exist = os.path.exists(z_taxpnl_2526) or os.path.exists(z_taxpnl_2627)
+
+    # Parse Other Debits (MTF interest, DP charges, pledge charges) from both FY files
+    def _merge_other_debits(base, overlay):
+        for m, entry in overlay.items():
+            if m in base:
+                base[m]["mtf_interest"]   = round(base[m]["mtf_interest"]   + entry.get("mtf_interest",   0.0), 2)
+                base[m]["dp_charges"]     = round(base[m]["dp_charges"]     + entry.get("dp_charges",     0.0), 2)
+                base[m]["pledge_charges"] = round(base[m]["pledge_charges"] + entry.get("pledge_charges", 0.0), 2)
+            else:
+                base[m] = dict(entry)
+        return base
+
+    zerodha_other = {}
+    zerodha_other = _merge_other_debits(zerodha_other, parse_zerodha_other_debits(z_taxpnl_2526))
+    zerodha_other = _merge_other_debits(zerodha_other, parse_zerodha_other_debits(z_taxpnl_2627))
+
+    # Parse Tradewise Exits (brokerage + STT) from both FY files
+    def _merge_tradewise(base, overlay):
+        for m, entry in overlay.items():
+            if m in base:
+                base[m]["brokerage"] = round(base[m]["brokerage"] + entry.get("brokerage", 0.0), 2)
+                base[m]["tax_stt"]   = round(base[m]["tax_stt"]   + entry.get("tax_stt",   0.0), 2)
+            else:
+                base[m] = dict(entry)
+        return base
+
+    zerodha_trade = {}
+    zerodha_trade = _merge_tradewise(zerodha_trade, parse_zerodha_tradewise(z_taxpnl_2526))
+    zerodha_trade = _merge_tradewise(zerodha_trade, parse_zerodha_tradewise(z_taxpnl_2627))
+
+    # Parse Interest Statements (MTF Loan Position — last funded amount of each month)
+    def _merge_mtf_position(base, overlay):
+        for m, amount in overlay.items():
+            # Take the larger of the two (in case of overlap between FY files)
+            base[m] = max(base.get(m, 0.0), amount)
+        return base
+
+    zerodha_mtf_position = {}
+    zerodha_mtf_position = _merge_mtf_position(zerodha_mtf_position, parse_zerodha_interest_statement(z_int_2526))
+    zerodha_mtf_position = _merge_mtf_position(zerodha_mtf_position, parse_zerodha_interest_statement(z_int_2627))
+
+    selected_broker = broker or "All"
+
+    # ── LIFO realized P&L ─────────────────────────────────────
+    query = db.query(Transaction)
+    if selected_broker.lower() != "all":
+        query = query.filter(Transaction.broker.ilike(selected_broker))
+    query = _apply_analytics_filters(query, Transaction)
+    txs = query.all()
+
+    settlement = compute_lifo_settlement(txs)
+
+    lifo_pnl_map = {}
+    for row in settlement:
+        if row.get("pnl") is None or row.get("sell_date") is None:
+            continue
+        sd = row["sell_date"]
+        if isinstance(sd, str):
+            sd = datetime.fromisoformat(sd)
+        month_key = sd.strftime("%Y-%m")
+        lifo_pnl_map[month_key] = lifo_pnl_map.get(month_key, 0.0) + float(row["pnl"])
+
+    # Collect all month keys
+    zerodha_months = (
+        set(zerodha_other.keys()) |
+        set(zerodha_trade.keys()) |
+        set(zerodha_mtf_position.keys())
+    )
+    all_months = sorted(list(
+        set(lifo_pnl_map.keys()) |
+        set(mstock_ledger.keys()) |
+        set(mstock_tax.keys()) |
+        zerodha_months
+    ))
+    
+    months_list = []
+    for m in all_months:
+        pnl = round(lifo_pnl_map.get(m, 0.0), 2)
+
+        # ── MStock expenses ───────────────────────────────────
+        if selected_broker.lower() in ("all", "mstock"):
+            ms_ledger = mstock_ledger.get(m, {"mtf_interest": 0.0, "dp_charges": 0.0, "mtf_position": 0.0})
+            ms_tax    = mstock_tax.get(m, {"brokerage": 0.0, "tax_other_stt": 0.0})
+        else:
+            ms_ledger = {"mtf_interest": 0.0, "dp_charges": 0.0, "mtf_position": 0.0}
+            ms_tax    = {"brokerage": 0.0, "tax_other_stt": 0.0}
+
+        ms_mtf_int    = ms_ledger.get("mtf_interest", 0.0)
+        ms_dp         = ms_ledger.get("dp_charges",   0.0)
+        ms_brokerage  = ms_tax.get("brokerage",       0.0)
+        ms_tax_stt    = ms_tax.get("tax_other_stt",   0.0)
+        ms_mtf_pos    = ms_ledger.get("mtf_position", 0.0)
+
+        # ── Zerodha expenses ──────────────────────────────────
+        if selected_broker.lower() in ("all", "zerodha"):
+            z_other = zerodha_other.get(m, {"mtf_interest": 0.0, "dp_charges": 0.0, "pledge_charges": 0.0})
+            z_trade = zerodha_trade.get(m, {"brokerage": 0.0, "tax_stt": 0.0})
+            z_pos   = zerodha_mtf_position.get(m, 0.0)
+        else:
+            z_other = {"mtf_interest": 0.0, "dp_charges": 0.0, "pledge_charges": 0.0}
+            z_trade = {"brokerage": 0.0, "tax_stt": 0.0}
+            z_pos   = 0.0
+
+        z_mtf_int       = z_other.get("mtf_interest",   0.0)
+        z_dp            = z_other.get("dp_charges",      0.0)
+        z_pledge        = z_other.get("pledge_charges",  0.0)
+        z_brokerage     = z_trade.get("brokerage",       0.0)
+        z_tax_stt       = z_trade.get("tax_stt",         0.0)
+
+        # ── Combined ──────────────────────────────────────────
+        total_mtf_int    = round(ms_mtf_int   + z_mtf_int,    2)
+        total_dp         = round(ms_dp        + z_dp,         2)
+        total_pledge     = round(z_pledge,                    2)   # MStock has no pledge charges
+        total_brokerage  = round(ms_brokerage + z_brokerage,  2)
+        total_tax_stt    = round(ms_tax_stt   + z_tax_stt,    2)
+        total_mtf_pos    = max(ms_mtf_pos, z_pos)
+
+        actual_pnl = round(
+            pnl - total_mtf_int - total_dp - total_pledge - total_brokerage - total_tax_stt,
+            2
+        )
+
+        months_list.append({
+            "month":          m,
+            "realized_pnl":   pnl,
+            "mtf_interest":   total_mtf_int,
+            "dp_charges":     total_dp,
+            "pledge_charges": total_pledge,
+            "brokerage":      total_brokerage,
+            "tax_other_stt":  total_tax_stt,
+            "actual_net_pnl": actual_pnl,
+            "mtf_position":   total_mtf_pos,
+        })
+
+    return {
+        "months": months_list,
+        "mstock_files_missing": not (ledger_exists and tax_pnl_exists),
+        "ledger_exists": ledger_exists,
+        "tax_pnl_exists": tax_pnl_exists,
+        "zerodha_files_exist": zerodha_files_exist,
+    }
+
 
 
 class SectorOverridePayload(BaseModel):

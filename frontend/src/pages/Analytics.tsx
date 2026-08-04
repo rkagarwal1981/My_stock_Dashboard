@@ -717,79 +717,47 @@ const Analytics: React.FC = () => {
         {/* Widget 3 — Stock Churn Histogram */}
         {(() => {
           // Update module-level total for ChurnBarLabel
-          _churnTotal = churnMode === 'volume' ? (churnData.total || 0) : (churnData.total_value || 0);
-          _churnMode = churnMode;
+          _churnTotal = churnData.total || 0;
+          _churnMode = 'volume';
 
           return (
             <ChartCard
               title="Stock Churn"
               subtitle="Holding Period Distribution (LIFO)"
               icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#8b5cf6' }} />}
-              extra={
-                <RadioGroup
-                  row
-                  value={churnMode}
-                  onChange={(e) => setChurnMode(e.target.value as 'volume' | 'value')}
-                  sx={{
-                    backgroundColor: 'rgba(255,255,255,0.05)',
-                    borderRadius: 2,
-                    p: '2px 8px',
-                    '& .MuiFormControlLabel-label': {
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: '#94a3b8',
-                    },
-                    '& .Mui-checked + .MuiFormControlLabel-label': {
-                      color: '#f8fafc',
-                    },
-                    '& .MuiRadio-root': {
-                      padding: '4px',
-                      color: '#475569',
-                      '&.Mui-checked': {
-                        color: '#8b5cf6',
-                      }
-                    }
-                  }}
-                >
-                  <FormControlLabel value="volume" control={<Radio size="small" />} label="Volume" sx={{ mr: 1.5 }} />
-                  <FormControlLabel value="value" control={<Radio size="small" />} label="Value" sx={{ mr: 0 }} />
-                </RadioGroup>
-              }
             >
               {churnLoading ? <Spinner /> : churnBinsRemapped.every(b => b.count === 0) ? (
                 <EmptyState text="No closed positions in selected date range." />
               ) : (
                 <>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-                    <Chip label={churnMode === 'volume' ? `${totalChurn} closed positions` : `${fmt(totalChurnValue)} total value`} size="small"
+                    <Chip label={`${totalChurn} closed positions`} size="small"
                       sx={{ bgcolor: 'rgba(139,92,246,0.1)', color: '#8b5cf6', fontSize: 11, fontWeight: 600 }} />
                   </Box>
                   {/* right margin 120 gives the outside label enough room */}
                   <ResponsiveContainer width="100%" height={255}>
                     <BarChart data={churnBinsRemapped} layout="vertical" margin={{ top: 0, right: 120, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" horizontal={false} />
-                      <XAxis type="number" tickFormatter={churnMode === 'volume' ? undefined : fmtShort} tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                       <YAxis type="category" dataKey="bin_label" tick={{ fill: '#94a3b8', fontSize: 12 }} width={56} axisLine={false} tickLine={false} />
                       <Tooltip
                         content={({ active, payload }) => {
                           if (!active || !payload?.length) return null;
                           const d = payload[0]?.payload;
-                          const val = churnMode === 'volume' ? d?.count : d?.total_value;
-                          const pct = _churnTotal > 0 ? ((val / _churnTotal) * 100).toFixed(1) : '0.0';
-                          const labelValue = churnMode === 'volume' ? `Positions: ${d?.count}` : `Value: ${fmt(d?.total_value || 0)}`;
+                          const pct = _churnTotal > 0 ? ((d?.count / _churnTotal) * 100).toFixed(1) : '0.0';
                           return (
                             <Box sx={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 2, p: 1.5, minWidth: 150 }}>
                               <Typography variant="body2" sx={{ color: '#f8fafc', fontWeight: 700, fontSize: '15.6px', mb: 0.5 }}>
                                 {d?.bin_label}
                               </Typography>
                               <Typography variant="body2" sx={{ color: '#cbd5e1', fontSize: '15.6px' }}>
-                                {labelValue} ({pct}%)
+                                Positions: {d?.count} ({pct}%)
                               </Typography>
                             </Box>
                           );
                         }}
                       />
-                      <Bar dataKey={churnMode === 'volume' ? "count" : "total_value"} name={churnMode === 'volume' ? "Positions" : "Value"} radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
+                      <Bar dataKey="count" name="Positions" radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
                         {churnBinsRemapped.map((_: any, i: number) => {
                           const colors = ['#2962ff', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
                           return <Cell key={i} fill={colors[i % colors.length]} />;

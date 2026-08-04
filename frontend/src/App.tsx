@@ -30,6 +30,7 @@ import MutualFunds from './pages/MutualFunds';
 import TargetSetting from './pages/TargetSetting';
 import Watchlist from './pages/Watchlist';
 import HoldingAnalysis from './pages/HoldingAnalysis';
+import ExpensesInterest from './pages/ExpensesInterest';
 
 // Material UI components
 import {
@@ -76,6 +77,7 @@ import AssessmentIcon from '@mui/icons-material/Assessment';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import StarIcon from '@mui/icons-material/Star';
 import PieChartIcon from '@mui/icons-material/PieChart';
+import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 
 const drawerWidth = 260;
 
@@ -359,6 +361,8 @@ function App() {
         return <LIFOSettlement onViewStock={handleViewStock} />;
       case 'analytics':
         return <Analytics />;
+      case 'expenses':
+        return <ExpensesInterest />;
       case 'mutual-funds':
         return <MutualFunds onViewStock={handleViewStock} />;
       case 'holding-analysis':
@@ -478,6 +482,7 @@ function App() {
               { id: 'transactions', text: 'Consolidated Portfolio', icon: <ListAltIcon /> },
               { id: 'lifo', text: 'LIFO Settlement', icon: <SwapHorizIcon /> },
               { id: 'analytics', text: 'Analytics', icon: <BarChartIcon /> },
+              { id: 'expenses', text: 'Expenses & Interest', icon: <AccountBalanceIcon /> },
               { id: 'mutual-funds', text: 'Mutual Funds', icon: <AssessmentIcon /> },
               { id: 'logs', text: 'Audit Logs', icon: <ReceiptIcon /> },
               { id: 'settings', text: 'Settings', icon: <SettingsIcon /> },
