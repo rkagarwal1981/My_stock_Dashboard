@@ -517,6 +517,12 @@ def reconcile_broker_holdings_snapshots(db: Session) -> int:
                 if f not in holding_files:
                     holding_files.append(f)
 
+    # Sort files by modification date ascending so that newer snapshots overwrite older ones
+    try:
+        holding_files.sort(key=lambda x: os.path.getmtime(x))
+    except Exception as es:
+        print(f"Error sorting holding files: {es}")
+
     snapshot_holdings = {}
 
     for filepath in holding_files:
@@ -549,8 +555,35 @@ def reconcile_broker_holdings_snapshots(db: Session) -> int:
                 qty = float(row.get('Quantity') or row.get('quantity') or row.get('qty') or 0)
                 avg_p = float(row.get('Avg Price') or row.get('avg_price') or row.get('average_price') or 0)
                 ltp = float(row.get('LTP') or row.get('ltp') or row.get('close_price') or avg_p)
-                cur_v = float(row.get('Current Value') or row.get('current_value') or (qty * ltp))
-                pnl = float(row.get('P&L') or row.get('pnl') or (cur_v - (qty * avg_p)))
+
+                # Get file modification date as snapshot date
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    file_date = datetime.fromtimestamp(mtime)
+                    
+                    # Query transactions newer than the snapshot file date
+                    db_txs = db.query(Transaction).filter(
+                        Transaction.broker.ilike(broker),
+                        Transaction.script == scrip
+                    ).all()
+                    
+                    newer_sum = 0.0
+                    for tx in db_txs:
+                        tx_date = tx.transaction_date
+                        if tx_date and tx_date.date() > file_date.date():
+                            if tx.buy_sell.upper() == "BUY":
+                                newer_sum += tx.quantity
+                            elif tx.buy_sell.upper() == "SELL":
+                                newer_sum -= tx.quantity
+                    qty += newer_sum
+                except Exception as ex:
+                    print(f"Error adjusting snapshot quantity with newer transactions: {ex}")
+
+                if qty < 0:
+                    qty = 0.0
+
+                cur_v = qty * ltp
+                pnl = cur_v - (qty * avg_p)
 
                 if qty > 0:
                     snapshot_holdings[(broker, scrip)] = {

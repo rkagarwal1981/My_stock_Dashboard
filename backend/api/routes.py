@@ -3036,6 +3036,8 @@ def get_watchlist_section2(
         
     movers = []
     for h in holdings:
+        if h.quantity <= 0:
+            continue
         script = h.script
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
@@ -3124,6 +3126,8 @@ def get_watchlist_section3(
         
     movers = []
     for h in holdings:
+        if h.quantity <= 0:
+            continue
         script = h.script
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
