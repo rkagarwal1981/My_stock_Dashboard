@@ -20,5 +20,6 @@ __pycache__/
 *.key
 *.db
 *.log
+Personal_Finance/
 
 
