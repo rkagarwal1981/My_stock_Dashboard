@@ -33,8 +33,24 @@ def parse_credentials_file(file_path: str) -> Dict[str, str]:
                 creds[key_norm] = val.strip()
     return creds
 
-def get_mstock_credentials() -> Dict[str, str]:
-    path = os.path.join(WORKSPACE_ROOT, "mstock_credentials.txt")
+def get_mstock_credentials(broker: str = "MStock") -> Dict[str, str]:
+    # Check env variables first (passed from backend)
+    bname = broker.upper()
+    username = os.environ.get(f"{bname}_USERNAME")
+    password = os.environ.get(f"{bname}_PASSWORD")
+    api_key = os.environ.get(f"{bname}_API_KEY")
+    totp_key = os.environ.get(f"{bname}_TOTP_KEY")
+    
+    if username and password:
+        return {
+            "username": username,
+            "password": password,
+            "api_key": api_key or "",
+            "totp_key": totp_key or ""
+        }
+        
+    filename = "mstock_credentials_KA.txt" if broker == "Mstock_KA" else "mstock_credentials.txt"
+    path = os.path.join(WORKSPACE_ROOT, filename)
     raw = parse_credentials_file(path)
     mapped = {}
     for k, v in raw.items():
@@ -57,7 +73,7 @@ def clean_numeric(val_str: str) -> float:
         return float(match.group(0))
     return 0.0
 
-def parse_generic_holding(item: dict) -> Optional[dict]:
+def parse_generic_holding(item: dict, broker: str = "MStock") -> Optional[dict]:
     scrip = (
         item.get("tradingSymbol") or 
         item.get("tradingsymbol") or 
@@ -106,7 +122,7 @@ def parse_generic_holding(item: dict) -> Optional[dict]:
     pnl = current_value - (qty * avg_price)
     
     return {
-        "Broker": "MStock",
+        "Broker": broker,
         "Scrip": scrip,
         "Quantity": qty,
         "Avg Price": avg_price,
@@ -115,7 +131,7 @@ def parse_generic_holding(item: dict) -> Optional[dict]:
         "P&L": pnl
     }
 
-def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
+def run_api_flow(creds: Dict[str, str], broker: str = "MStock") -> Optional[List[dict]]:
     username = creds.get("username")
     password = creds.get("password")
     api_key = creds.get("api_key")
@@ -163,39 +179,71 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
                 if isinstance(resp_json, dict) and resp_json.get("data"):
                     h_data = resp_json.get("data")
                     if isinstance(h_data, list):
-                        raw_holdings = h_data
+                        raw_holdings.extend(h_data)
                     elif isinstance(h_data, dict):
-                        raw_holdings = h_data.get("holdings") or h_data.get("portfolio") or []
+                        raw_holdings.extend(h_data.get("holdings") or h_data.get("portfolio") or [])
                     else:
-                        raw_holdings = resp_json.get("holdings") or resp_json.get("portfolio") or []
+                        raw_holdings.extend(resp_json.get("holdings") or resp_json.get("portfolio") or [])
                 elif isinstance(resp_json, list):
-                    raw_holdings = resp_json
+                    raw_holdings.extend(resp_json)
         except Exception as eh:
             print(f"get_holdings exception: {eh}")
 
-        if not raw_holdings:
-            print("get_holdings() returned null/empty. Querying get_net_position()...")
-            try:
-                pos_resp = mconnect.get_net_position()
-                if hasattr(pos_resp, "json"):
-                    resp_json = pos_resp.json()
-                    if isinstance(resp_json, dict) and resp_json.get("data"):
-                        pos_data = resp_json.get("data")
-                        if isinstance(pos_data, dict):
-                            raw_holdings = pos_data.get("net") or pos_data.get("position") or []
-                        elif isinstance(pos_data, list):
-                            raw_holdings = pos_data
-            except Exception as ep:
-                print(f"get_net_position exception: {ep}")
+        print("Querying get_net_position() for MTF positions...")
+        try:
+            pos_resp = mconnect.get_net_position()
+            if hasattr(pos_resp, "json"):
+                resp_json = pos_resp.json()
+                if isinstance(resp_json, dict) and resp_json.get("data"):
+                    pos_data = resp_json.get("data")
+                    if isinstance(pos_data, dict):
+                        raw_positions = pos_data.get("net") or pos_data.get("position") or []
+                    elif isinstance(pos_data, list):
+                        raw_positions = pos_data
+                    else:
+                        raw_positions = []
+                        
+                    for pos in raw_positions:
+                        # product "F" represents MTF positions
+                        if pos.get("product") == "F" and float(pos.get("quantity") or 0) > 0:
+                            raw_holdings.append(pos)
+        except Exception as ep:
+            print(f"get_net_position exception: {ep}")
 
-        if not isinstance(raw_holdings, list):
-            raw_holdings = []
+        parsed_items = []
+        for item in raw_holdings:
+            h = parse_generic_holding(item, broker=broker)
+            if h and h["Quantity"] > 0:
+                parsed_items.append(h)
+                
+        # Group by scrip to merge duplicate CNC and MTF positions
+        grouped = {}
+        for h in parsed_items:
+            scrip = h["Scrip"]
+            if scrip not in grouped:
+                grouped[scrip] = []
+            grouped[scrip].append(h)
             
         holdings = []
-        for item in raw_holdings:
-            h = parse_generic_holding(item)
-            if h and h["Quantity"] > 0:
-                holdings.append(h)
+        for scrip, items in grouped.items():
+            if len(items) == 1:
+                holdings.append(items[0])
+            else:
+                total_qty = sum(x["Quantity"] for x in items)
+                total_cost = sum(x["Quantity"] * x["Avg Price"] for x in items)
+                avg_price = round(total_cost / total_qty, 4) if total_qty > 0 else 0.0
+                first = items[0]
+                cur_val = total_qty * first["LTP"]
+                pnl = cur_val - (total_qty * avg_price)
+                holdings.append({
+                    "Broker": first["Broker"],
+                    "Scrip": scrip,
+                    "Quantity": total_qty,
+                    "Avg Price": avg_price,
+                    "LTP": first["LTP"],
+                    "Current Value": cur_val,
+                    "P&L": pnl
+                })
                 
         return holdings
     except Exception as e:
@@ -203,7 +251,7 @@ def run_api_flow(creds: Dict[str, str]) -> Optional[List[dict]]:
         traceback.print_exc()
         return None
 
-def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
+def run_playwright_flow(creds: Dict[str, str], broker: str = "MStock") -> List[dict]:
     username = creds.get("username")
     password = creds.get("password")
     totp_key = creds.get("totp_key")
@@ -340,7 +388,7 @@ def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
                         pnl = clean_numeric(cells[4].inner_text())
                         
                         holdings.append({
-                            "Broker": "MStock",
+                            "Broker": broker,
                             "Scrip": f"{scrip_text}-EQ" if not scrip_text.endswith("-EQ") else scrip_text,
                             "Quantity": qty,
                             "Avg Price": avg_price,
@@ -370,20 +418,33 @@ def run_playwright_flow(creds: Dict[str, str]) -> List[dict]:
     return holdings
 
 def main():
-    creds = get_mstock_credentials()
+    global COOKIE_PATH
+    import argparse
+    parser = argparse.ArgumentParser(description="Pull MStock Portfolio Holdings")
+    parser.add_argument("--broker", type=str, choices=["MStock", "Mstock_KA"], default="MStock", help="MStock broker account name")
+    args = parser.parse_args()
+    
+    broker = args.broker
+    
+    # Adjust dynamic COOKIE_PATH based on broker
+    if broker == "Mstock_KA":
+        COOKIE_PATH = os.path.join(COOKIE_DIR, "mstock_ka_session.json")
+        
+    creds = get_mstock_credentials(broker=broker)
     if not creds:
-        print("Error: Could not read mstock_credentials.txt. Please verify file name and path.")
+        filename = "mstock_credentials_KA.txt" if broker == "Mstock_KA" else "mstock_credentials.txt"
+        print(f"Error: Could not read {filename}. Please verify file name and path.")
         sys.exit(1)
         
     print(f"Credentials read successfully for user: {creds.get('username')}")
     
     # Run API flow
-    holdings = run_api_flow(creds)
+    holdings = run_api_flow(creds, broker=broker)
     
     # Fallback to Playwright if API flow failed or returned empty
     if not holdings:
         print("\nAPI flow did not return any holdings. Falling back to Playwright...")
-        holdings = run_playwright_flow(creds)
+        holdings = run_playwright_flow(creds, broker=broker)
         
     if not holdings:
         print("\nError: Failed to fetch holdings from both API and Playwright browser.")
@@ -393,20 +454,22 @@ def main():
     df = pd.DataFrame(holdings)
     
     # Print table to console
-    print("\n=== Live Holdings Summary (MStock) ===")
+    print(f"\n=== Live Holdings Summary ({broker}) ===")
     print(df.to_string(index=False))
     
     # Save to Excel
-    output_path = os.path.join(WORKSPACE_ROOT, "MStock_Live_Holdings.xlsx")
+    filename_live = "MStock_KA_Live_Holdings.xlsx" if broker == "Mstock_KA" else "MStock_Live_Holdings.xlsx"
+    output_path = os.path.join(WORKSPACE_ROOT, filename_live)
     print(f"\nSaving data to Excel: {output_path}...")
     
+    sheet_name = f"{broker} Holdings"
     # Format and save nicely
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='MStock Holdings', index=False)
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
         
         # Style sheet
         workbook = writer.book
-        worksheet = writer.sheets['MStock Holdings']
+        worksheet = writer.sheets[sheet_name]
         
         # Auto-fit columns
         for col in worksheet.columns:

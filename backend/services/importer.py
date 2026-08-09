@@ -37,6 +37,16 @@ def run_trade_pullers(force: bool = False):
     except Exception as e:
         print(f"Error running pull_mstock_trades.py: {e}")
         
+    # Run Mstock_KA trade sync
+    cmd_mstock_ka = [python_exe, "pull_mstock_trades.py", "--broker", "Mstock_KA"]
+    if force:
+        cmd_mstock_ka.append("--force")
+    try:
+        print("Running pull_mstock_trades.py for Mstock_KA...")
+        subprocess.run(cmd_mstock_ka, cwd=workspace_root, check=False)
+    except Exception as e:
+        print(f"Error running pull_mstock_trades.py for Mstock_KA: {e}")
+        
     # Run Zerodha trade sync
     cmd_zerodha = [python_exe, "pull_zerodha_trades.py"]
     if force:
@@ -241,7 +251,7 @@ def parse_zerodha_file(file_path: str) -> List[dict]:
         
     return transactions
 
-def parse_mstock_file(file_path: str) -> List[dict]:
+def parse_mstock_file(file_path: str, broker: str = "MStock") -> List[dict]:
     """
     Parses MStock Excel file.
     Finds header row containing 'Trade Date' and 'Scrip / Contract' and parses from there.
@@ -287,7 +297,7 @@ def parse_mstock_file(file_path: str) -> List[dict]:
         
         transactions.append({
             "transaction_date": tx_date,
-            "broker": "MStock",
+            "broker": broker,
             "script": script,
             "buy_sell": buy_sell,
             "quantity": qty,
@@ -319,6 +329,8 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
             broker = "Dhan"
         elif "zerodha" in lower_name:
             broker = "Zerodha"
+        elif "mstock_ka" in lower_name or "mstock-ka" in lower_name:
+            broker = "Mstock_KA"
         elif "mstock" in lower_name or "m-stock" in lower_name:
             broker = "MStock"
         else:
@@ -330,8 +342,8 @@ def import_file(db: Session, file_path: str, broker: str = None) -> int:
             parsed_txs = parse_dhan_file(file_path)
         elif broker == "Zerodha":
             parsed_txs = parse_zerodha_file(file_path)
-        elif broker == "MStock":
-            parsed_txs = parse_mstock_file(file_path)
+        elif broker in ["MStock", "Mstock_KA"]:
+            parsed_txs = parse_mstock_file(file_path, broker=broker)
         else:
             raise ValueError(f"Unsupported broker: {broker}")
             
@@ -432,7 +444,7 @@ def scan_and_import_directory(db: Session) -> dict:
     """
     # Delete the ImportHistory record for dynamic sync files so they are always re-scanned and imported
     try:
-        db.query(ImportHistory).filter(ImportHistory.filename.in_(["Trade History - Mstock.xlsx", "Trade History - Zerodha.xlsx"])).delete(synchronize_session=False)
+        db.query(ImportHistory).filter(ImportHistory.filename.in_(["Trade History - Mstock.xlsx", "Trade History - Mstock_KA.xlsx", "Trade History - Zerodha.xlsx"])).delete(synchronize_session=False)
         db.commit()
     except Exception as e:
         print(f"Error resetting dynamic sync file import history: {e}")
@@ -471,6 +483,8 @@ def scan_and_import_directory(db: Session) -> dict:
                 broker = "Dhan"
             elif "zerodha" in lower_name:
                 broker = "Zerodha"
+            elif "mstock_ka" in lower_name or "mstock-ka" in lower_name:
+                broker = "Mstock_KA"
             elif "mstock" in lower_name or "m-stock" in lower_name:
                 broker = "MStock"
             else:
@@ -497,16 +511,19 @@ def reconcile_broker_holdings_snapshots(db: Session) -> int:
     Does NOT compute active holdings from buy/sell transaction sums.
     """
     workspace_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    if not os.path.exists(os.path.join(workspace_root, "MStock_Live_Holdings.xlsx")):
+    if not os.path.exists(os.path.join(workspace_root, "MStock_Live_Holdings.xlsx")) and not os.path.exists(os.path.join(workspace_root, "MStock_KA_Live_Holdings.xlsx")):
         workspace_root = os.getcwd()
 
     holding_files = []
     
     mstock_file = os.path.join(workspace_root, "MStock_Live_Holdings.xlsx")
+    mstock_ka_file = os.path.join(workspace_root, "MStock_KA_Live_Holdings.xlsx")
     zerodha_file = os.path.join(workspace_root, "Zerodha_Live_Holdings.xlsx")
     
     if os.path.exists(mstock_file):
         holding_files.append(mstock_file)
+    if os.path.exists(mstock_ka_file):
+        holding_files.append(mstock_ka_file)
     if os.path.exists(zerodha_file):
         holding_files.append(zerodha_file)
         
@@ -536,7 +553,9 @@ def reconcile_broker_holdings_snapshots(db: Session) -> int:
             for _, row in df.iterrows():
                 broker = str(row.get('Broker') or row.get('broker') or '').strip()
                 if not broker:
-                    if 'mstock' in filename:
+                    if 'mstock_ka' in filename or 'mstock-ka' in filename:
+                        broker = 'Mstock_KA'
+                    elif 'mstock' in filename:
                         broker = 'MStock'
                     elif 'zerodha' in filename:
                         broker = 'Zerodha'

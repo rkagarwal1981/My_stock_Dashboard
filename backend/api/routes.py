@@ -102,7 +102,7 @@ class CredentialsRequest(BaseModel):
 @router.post("/credentials")
 def save_credentials(req: CredentialsRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     broker = req.broker_name.lower()
-    if broker not in ["mstock", "zerodha", "dhan"]:
+    if broker not in ["mstock", "mstock_ka", "zerodha", "dhan"]:
         raise HTTPException(status_code=400, detail="Invalid broker name")
         
     encrypted_user = encrypt_value(req.username)
@@ -254,7 +254,18 @@ def export_settlement(
 ):
     txs = db.query(Transaction).all()
     settlement = compute_lifo_settlement(txs)
-    df = pd.DataFrame(settlement)
+    
+    # Format datetime objects to string dates to prevent pandas/numpy from crashing on datetime objects
+    formatted_settlement = []
+    for row in settlement:
+        new_row = dict(row)
+        if new_row.get("buy_date"):
+            new_row["buy_date"] = new_row["buy_date"].strftime("%Y-%m-%d")
+        if new_row.get("sell_date"):
+            new_row["sell_date"] = new_row["sell_date"].strftime("%Y-%m-%d")
+        formatted_settlement.append(new_row)
+        
+    df = pd.DataFrame(formatted_settlement)
     
     # Rename columns to match template headers
     if not df.empty:
@@ -886,8 +897,8 @@ def bg_scrape(broker: str, cred_id: int, db_session_factory):
         
         if broker == "zerodha":
             holdings = run_zerodha_scraper(username, password, pin, totp_key, api_key, api_secret)
-        elif broker == "mstock":
-            holdings = run_mstock_scraper(username, password, pin, totp_key, api_key, api_secret)
+        elif broker in ["mstock", "mstock_ka"]:
+            holdings = run_mstock_scraper(username, password, pin, totp_key, api_key, api_secret, broker=broker)
         elif broker == "dhan":
             holdings = run_dhan_scraper(username, password, pin, totp_key, api_key, api_secret)
         else:
@@ -895,7 +906,7 @@ def bg_scrape(broker: str, cred_id: int, db_session_factory):
             
         if automation_states[broker]["status"] == "SUCCESS" and holdings:
             # Clear previous holdings for this broker (using exact database capitalization)
-            broker_mapping = {"mstock": "MStock", "zerodha": "Zerodha", "dhan": "Dhan"}
+            broker_mapping = {"mstock": "MStock", "mstock_ka": "Mstock_KA", "zerodha": "Zerodha", "dhan": "Dhan"}
             db_broker = broker_mapping.get(broker.lower(), broker.capitalize())
             db.query(Holding).filter(Holding.broker == db_broker).delete()
             for h in holdings:
@@ -938,7 +949,7 @@ def trigger_scrape(
     db: Session = Depends(get_db)
 ):
     broker = broker.lower()
-    if broker not in ["mstock", "zerodha", "dhan"]:
+    if broker not in ["mstock", "mstock_ka", "zerodha", "dhan"]:
         raise HTTPException(status_code=400, detail="Invalid broker")
         
     cred = db.query(BrokerCredentials).filter_by(user_id=current_user.id, broker_name=broker).first()
@@ -2017,10 +2028,11 @@ def analytics_expenses_interest(
     expense_dir = os.path.join(root_dir, "Expense")
 
     # ── MStock files ───────────────────────────────────────────
-    ledger_path       = os.path.join(root_dir, "MA108170_Ledger_Report.xlsx")
-    tax_pnl_path      = os.path.join(root_dir, "Tax_PNL_mstock.xlsx")
-    ledger_2526_path  = os.path.join(root_dir, "MA108170_Ledger_Report (25-26).xlsx")
-    tax_pnl_2526_path = os.path.join(root_dir, "Tax_PNL_Mstock (25-26).xlsx")
+    # Moved to Expense directory
+    ledger_path       = os.path.join(expense_dir, "MA108170_Ledger_Report.xlsx")
+    tax_pnl_path      = os.path.join(expense_dir, "Tax_PNL_mstock.xlsx")
+    ledger_2526_path  = os.path.join(expense_dir, "MA108170_Ledger_Report (25-26).xlsx")
+    tax_pnl_2526_path = os.path.join(expense_dir, "Tax_PNL_Mstock (25-26).xlsx")
 
     ledger_exists      = os.path.exists(ledger_path)
     tax_pnl_exists     = os.path.exists(tax_pnl_path)
@@ -2038,14 +2050,56 @@ def analytics_expenses_interest(
             mstock_ledger[m]["dp_charges"]   = round(mstock_ledger[m]["dp_charges"]   + entry.get("dp_charges",   0.0), 2)
             mstock_ledger[m]["mtf_position"] = max(mstock_ledger[m]["mtf_position"], entry.get("mtf_position", 0.0))
         else:
-            mstock_ledger[m] = entry
+            mstock_ledger[m] = dict(entry)
 
     for m, entry in mstock_tax_2526.items():
         if m in mstock_tax:
             mstock_tax[m]["brokerage"]    = round(mstock_tax[m]["brokerage"]    + entry.get("brokerage",    0.0), 2)
             mstock_tax[m]["tax_other_stt"] = round(mstock_tax[m]["tax_other_stt"] + entry.get("tax_other_stt", 0.0), 2)
         else:
-            mstock_tax[m] = entry
+            mstock_tax[m] = dict(entry)
+
+    # ── Mstock_KA files ────────────────────────────────────────
+    # Updated to read (2025-26) and (2026-27) formats from Expense folder
+    ka_ledger_2526_path  = os.path.join(expense_dir, "MA135204_Ledger_Report (2025-26).xlsx")
+    ka_tax_pnl_2526_path = os.path.join(expense_dir, "Tax_PNL Mstock_KA (2025-26).xlsx")
+    ka_ledger_2627_path  = os.path.join(expense_dir, "MA135204_Ledger_Report (2026-27).xlsx")
+    ka_tax_pnl_2627_path = os.path.join(expense_dir, "Tax_PNL Mstock_KA (2026-27).xlsx")
+
+    ka_ledger_2526_exists  = os.path.exists(ka_ledger_2526_path)
+    ka_tax_pnl_2526_exists = os.path.exists(ka_tax_pnl_2526_path)
+    ka_ledger_2627_exists  = os.path.exists(ka_ledger_2627_path)
+    ka_tax_pnl_2627_exists = os.path.exists(ka_tax_pnl_2627_path)
+
+    ka_ledger_exists  = ka_ledger_2627_exists and ka_ledger_2526_exists
+    ka_tax_pnl_exists = ka_tax_pnl_2627_exists and ka_tax_pnl_2526_exists
+
+    ka_mstock_ledger_2526 = parse_mstock_ledger(ka_ledger_2526_path) if ka_ledger_2526_exists else {}
+    ka_mstock_tax_2526   = parse_mstock_tax_pnl(ka_tax_pnl_2526_path) if ka_tax_pnl_2526_exists else {}
+    ka_mstock_ledger_2627 = parse_mstock_ledger(ka_ledger_2627_path) if ka_ledger_2627_exists else {}
+    ka_mstock_tax_2627   = parse_mstock_tax_pnl(ka_tax_pnl_2627_path) if ka_tax_pnl_2627_exists else {}
+
+    # Merge 25-26 and 26-27 into final ka_mstock_ledger & ka_mstock_tax
+    ka_mstock_ledger = {}
+    for m, entry in ka_mstock_ledger_2526.items():
+        ka_mstock_ledger[m] = dict(entry)
+    for m, entry in ka_mstock_ledger_2627.items():
+        if m in ka_mstock_ledger:
+            ka_mstock_ledger[m]["mtf_interest"] = round(ka_mstock_ledger[m]["mtf_interest"] + entry.get("mtf_interest", 0.0), 2)
+            ka_mstock_ledger[m]["dp_charges"]   = round(ka_mstock_ledger[m]["dp_charges"]   + entry.get("dp_charges",   0.0), 2)
+            ka_mstock_ledger[m]["mtf_position"] = max(ka_mstock_ledger[m]["mtf_position"], entry.get("mtf_position", 0.0))
+        else:
+            ka_mstock_ledger[m] = dict(entry)
+
+    ka_mstock_tax = {}
+    for m, entry in ka_mstock_tax_2526.items():
+        ka_mstock_tax[m] = dict(entry)
+    for m, entry in ka_mstock_tax_2627.items():
+        if m in ka_mstock_tax:
+            ka_mstock_tax[m]["brokerage"]    = round(ka_mstock_tax[m]["brokerage"]    + entry.get("brokerage",    0.0), 2)
+            ka_mstock_tax[m]["tax_other_stt"] = round(ka_mstock_tax[m]["tax_other_stt"] + entry.get("tax_other_stt", 0.0), 2)
+        else:
+            ka_mstock_tax[m] = dict(entry)
 
     # ── Zerodha files ──────────────────────────────────────────
     z_taxpnl_2526 = os.path.join(expense_dir, "taxpnl-RIM544-2025_2026.xlsx")
@@ -2126,6 +2180,8 @@ def analytics_expenses_interest(
         set(lifo_pnl_map.keys()) |
         set(mstock_ledger.keys()) |
         set(mstock_tax.keys()) |
+        set(ka_mstock_ledger.keys()) |
+        set(ka_mstock_tax.keys()) |
         zerodha_months
     ))
     
@@ -2147,6 +2203,20 @@ def analytics_expenses_interest(
         ms_tax_stt    = ms_tax.get("tax_other_stt",   0.0)
         ms_mtf_pos    = ms_ledger.get("mtf_position", 0.0)
 
+        # ── Mstock_KA expenses ────────────────────────────────
+        if selected_broker.lower() in ("all", "mstock_ka"):
+            ka_ms_ledger = ka_mstock_ledger.get(m, {"mtf_interest": 0.0, "dp_charges": 0.0, "mtf_position": 0.0})
+            ka_ms_tax    = ka_mstock_tax.get(m, {"brokerage": 0.0, "tax_other_stt": 0.0})
+        else:
+            ka_ms_ledger = {"mtf_interest": 0.0, "dp_charges": 0.0, "mtf_position": 0.0}
+            ka_ms_tax    = {"brokerage": 0.0, "tax_other_stt": 0.0}
+
+        ka_ms_mtf_int    = ka_ms_ledger.get("mtf_interest", 0.0)
+        ka_ms_dp         = ka_ms_ledger.get("dp_charges",   0.0)
+        ka_ms_brokerage  = ka_ms_tax.get("brokerage",       0.0)
+        ka_ms_tax_stt    = ka_ms_tax.get("tax_other_stt",   0.0)
+        ka_ms_mtf_pos    = ka_ms_ledger.get("mtf_position", 0.0)
+
         # ── Zerodha expenses ──────────────────────────────────
         if selected_broker.lower() in ("all", "zerodha"):
             z_other = zerodha_other.get(m, {"mtf_interest": 0.0, "dp_charges": 0.0, "pledge_charges": 0.0})
@@ -2164,12 +2234,12 @@ def analytics_expenses_interest(
         z_tax_stt       = z_trade.get("tax_stt",         0.0)
 
         # ── Combined ──────────────────────────────────────────
-        total_mtf_int    = round(ms_mtf_int   + z_mtf_int,    2)
-        total_dp         = round(ms_dp        + z_dp,         2)
-        total_pledge     = round(z_pledge,                    2)   # MStock has no pledge charges
-        total_brokerage  = round(ms_brokerage + z_brokerage,  2)
-        total_tax_stt    = round(ms_tax_stt   + z_tax_stt,    2)
-        total_mtf_pos    = max(ms_mtf_pos, z_pos)
+        total_mtf_int    = round(ms_mtf_int   + ka_ms_mtf_int   + z_mtf_int,    2)
+        total_dp         = round(ms_dp        + ka_ms_dp        + z_dp,         2)
+        total_pledge     = round(z_pledge,                                      2)
+        total_brokerage  = round(ms_brokerage + ka_ms_brokerage + z_brokerage,  2)
+        total_tax_stt    = round(ms_tax_stt   + ka_ms_tax_stt   + z_tax_stt,    2)
+        total_mtf_pos    = max(ms_mtf_pos, ka_ms_mtf_pos, z_pos)
 
         actual_pnl = round(
             pnl - total_mtf_int - total_dp - total_pledge - total_brokerage - total_tax_stt,
@@ -2194,6 +2264,9 @@ def analytics_expenses_interest(
         "ledger_exists": ledger_exists,
         "tax_pnl_exists": tax_pnl_exists,
         "zerodha_files_exist": zerodha_files_exist,
+        "mstock_ka_files_missing": not (ka_ledger_exists and ka_tax_pnl_exists),
+        "mstock_ka_ledger_exists": ka_ledger_exists,
+        "mstock_ka_tax_pnl_exists": ka_tax_pnl_exists,
     }
 
 

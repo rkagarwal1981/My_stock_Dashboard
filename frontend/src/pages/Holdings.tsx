@@ -23,7 +23,7 @@ interface HoldingsProps {
 const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast }) => {
   const allHoldings = useAppSelector((state) => state.portfolio.holdings);
   const [activeTab, setActiveTab] = useState('all');
-  const brokers = ['all', 'MStock', 'Zerodha', 'Dhan'];
+  const brokers = ['all', 'MStock', 'Mstock_KA', 'Zerodha', 'Dhan'];
   const [popoverAnchor, setPopoverAnchor] = useState<HTMLElement | null>(null);
   const [popoverData, setPopoverData] = useState<any[]>([]);
   const [popoverStock, setPopoverStock] = useState<string>('');
@@ -148,7 +148,7 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
     },
     { field: 'broker', headerName: 'Broker', flex: 1, minWidth: 100,
       cellRenderer: (p: any) => {
-        const colors: Record<string, string> = { MStock: '#2962ff', Zerodha: '#f59e0b', Dhan: '#10b981' };
+        const colors: Record<string, string> = { MStock: '#2962ff', Mstock_KA: '#b229ff', Zerodha: '#f59e0b', Dhan: '#10b981' };
         return <Chip label={p.value} size="small" sx={{ bgcolor: `${colors[p.value] || '#888'}22`, color: colors[p.value] || '#888', fontSize: 11 }} />;
       }
     },
@@ -450,12 +450,20 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
             onClick={() => handleExport('csv')}>
             Export CSV
           </Button>
-          {['mstock', 'zerodha', 'dhan'].map(b => (
-            <Button key={b} variant="outlined" size="small" startIcon={<StorefrontIcon />}
-              onClick={() => onScrape(b)} sx={{ textTransform: 'capitalize' }}>
-              Sync {b}
-            </Button>
-          ))}
+          {['mstock', 'mstock_ka', 'zerodha', 'dhan'].map(b => {
+            const labels: Record<string, string> = {
+              mstock: 'MStock',
+              mstock_ka: 'Mstock KA',
+              zerodha: 'Zerodha',
+              dhan: 'Dhan'
+            };
+            return (
+              <Button key={b} variant="outlined" size="small" startIcon={<StorefrontIcon />}
+                onClick={() => onScrape(b)} sx={{ textTransform: 'capitalize' }}>
+                Sync {labels[b]}
+              </Button>
+            );
+          })}
         </Box>
       </Box>
 

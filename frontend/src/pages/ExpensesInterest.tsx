@@ -36,7 +36,7 @@ const fmtShort = (v: number): string => {
 
 const ExpensesInterest: React.FC = () => {
   const [broker, setBroker] = useState('All');
-  const [data, setData] = useState<any>({ months: [], mstock_files_missing: false, ledger_exists: false, tax_pnl_exists: false, zerodha_files_exist: false });
+  const [data, setData] = useState<any>({ months: [], mstock_files_missing: false, ledger_exists: false, tax_pnl_exists: false, zerodha_files_exist: false, mstock_ka_files_missing: false, mstock_ka_ledger_exists: false, mstock_ka_tax_pnl_exists: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
@@ -124,6 +124,7 @@ const ExpensesInterest: React.FC = () => {
           >
             <MenuItem value="All">All Brokers</MenuItem>
             <MenuItem value="MStock">MStock</MenuItem>
+            <MenuItem value="Mstock_KA">Mstock_KA</MenuItem>
             <MenuItem value="Zerodha">Zerodha</MenuItem>
             <MenuItem value="Dhan">Dhan</MenuItem>
           </Select>
@@ -131,14 +132,15 @@ const ExpensesInterest: React.FC = () => {
       </Box>
 
       {/* MStock files missing alert */}
-      {data.mstock_files_missing && (
+      {data.mstock_files_missing && (broker === 'All' || broker === 'MStock') && (
         <Alert
           severity="warning"
           sx={{
             background: 'rgba(245,158,11,0.08)',
             border: '1px solid rgba(245,158,11,0.2)',
             color: '#fbbf24',
-            alignItems: 'center'
+            alignItems: 'center',
+            mb: 1
           }}
           action={
             <Button
@@ -156,15 +158,42 @@ const ExpensesInterest: React.FC = () => {
         </Alert>
       )}
 
+      {/* Mstock_KA files missing alert */}
+      {data.mstock_ka_files_missing && (broker === 'All' || broker === 'Mstock_KA') && (
+        <Alert
+          severity="warning"
+          sx={{
+            background: 'rgba(245,158,11,0.08)',
+            border: '1px solid rgba(245,158,11,0.2)',
+            color: '#fbbf24',
+            alignItems: 'center',
+            mb: 1
+          }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => setShowInstructions(!showInstructions)}
+              endIcon={showInstructions ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              sx={{ fontWeight: 600 }}
+            >
+              Instructions
+            </Button>
+          }
+        >
+          Mstock_KA ledger files not detected in the workspace root. Mstock_KA expenses will be calculated as ₹0.00.
+        </Alert>
+      )}
+
       {/* Collapsible Setup Instructions */}
-      <Collapse in={showInstructions || data.mstock_files_missing && activeMonths.length === 0}>
+      <Collapse in={showInstructions || (data.mstock_files_missing || data.mstock_ka_files_missing) && activeMonths.length === 0}>
         <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px dashed #fbbf24', borderRadius: 3, p: 2 }}>
           <CardContent sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 700, color: '#fbbf24' }}>
               How to copy files to workspace:
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Please copy these two files into your main project directory to enable tracking of MTF interest, DP charges, STT, and brokerage:
+              Please copy these files into your main project directory to enable tracking of MTF interest, DP charges, STT, and brokerage:
             </Typography>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.03)', p: 2, borderRadius: 2, border: '1px solid #2a2e43' }}>
               <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 1, color: '#f8fafc' }}>
@@ -173,8 +202,14 @@ const ExpensesInterest: React.FC = () => {
               <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 0.5, color: '#38bdf8' }}>
                 📄 MA108170_Ledger_Report.xlsx (MStock Ledger statement)
               </Typography>
-              <Typography variant="body2" sx={{ fontFamily: 'monospace', color: '#34d399' }}>
+              <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 1, color: '#34d399' }}>
                 📄 Tax_PNL_mstock.xlsx (MStock Tax P&L Statement)
+              </Typography>
+              <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 0.5, color: '#ab47bc' }}>
+                📄 MA135204_Ledger_Report.xlsx (Mstock_KA Ledger statement)
+              </Typography>
+              <Typography variant="body2" sx={{ fontFamily: 'monospace', color: '#ec407a' }}>
+                📄 Tax_PNL_Mstock_KA.xlsx (Mstock_KA Tax P&L Statement)
               </Typography>
             </Box>
           </CardContent>

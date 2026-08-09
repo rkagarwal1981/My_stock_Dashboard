@@ -557,6 +557,7 @@ const HoldingAnalysis: React.FC = () => {
               <MenuItem value="All">All Brokers</MenuItem>
               <MenuItem value="Zerodha">Zerodha</MenuItem>
               <MenuItem value="MStock">MStock</MenuItem>
+              <MenuItem value="Mstock_KA">Mstock_KA</MenuItem>
               <MenuItem value="Dhan">Dhan</MenuItem>
             </Select>
           </FormControl>

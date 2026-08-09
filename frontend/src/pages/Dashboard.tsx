@@ -287,18 +287,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onViewStock, onScrape }) => {
           <Typography variant="body2" color="text.secondary">Real-time portfolio overview across all brokers</Typography>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
-          {['mstock', 'zerodha', 'dhan'].map(broker => (
-            <Button
-              key={broker}
-              variant="outlined"
-              size="small"
-              startIcon={<StorefrontIcon />}
-              onClick={() => onScrape(broker)}
-              sx={{ textTransform: 'capitalize' }}
-            >
-              Sync {broker}
-            </Button>
-          ))}
+          {['mstock', 'mstock_ka', 'zerodha', 'dhan'].map(broker => {
+            const labels: Record<string, string> = {
+              mstock: 'MStock',
+              mstock_ka: 'Mstock KA',
+              zerodha: 'Zerodha',
+              dhan: 'Dhan'
+            };
+            return (
+              <Button
+                key={broker}
+                variant="outlined"
+                size="small"
+                startIcon={<StorefrontIcon />}
+                onClick={() => onScrape(broker)}
+                sx={{ textTransform: 'capitalize' }}
+              >
+                Sync {labels[broker]}
+              </Button>
+            );
+          })}
         </Box>
       </Box>
 

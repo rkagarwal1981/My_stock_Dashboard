@@ -36,6 +36,17 @@ const Settings: React.FC = () => {
       ]
     },
     {
+      key: 'mstock_ka',
+      label: 'Mstock KA (Kanchan)',
+      color: '#b229ff',
+      fields: [
+        { key: 'username', label: 'User ID (MA135204...)', type: 'text', required: true },
+        { key: 'password', label: 'Password', type: 'password', required: true },
+        { key: 'api_key', label: 'API Key (Type A)', type: 'password', required: true },
+        { key: 'totp_key', label: 'TOTP Secret Key (optional)', type: 'password', required: false, helperText: 'Enable automatic 2FA TOTP' }
+      ]
+    },
+    {
       key: 'zerodha',
       label: 'Zerodha (Kite)',
       color: '#f59e0b',
@@ -61,6 +72,7 @@ const Settings: React.FC = () => {
 
   const [creds, setCreds] = useState<Record<string, Record<string, string>>>({
     mstock: { username: '', password: '', api_key: '', totp_key: '' },
+    mstock_ka: { username: '', password: '', api_key: '', totp_key: '' },
     zerodha: { username: '', password: '', api_key: '', api_secret: '', pin: '', totp_key: '' },
     dhan: { username: '', password: '' }
   });

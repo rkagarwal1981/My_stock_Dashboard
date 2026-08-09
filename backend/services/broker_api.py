@@ -32,7 +32,47 @@ def parse_credentials_file(file_path: str) -> Dict[str, str]:
     return creds
 
 def get_mstock_credentials() -> Dict[str, str]:
+    # Check env variables first
+    username = os.environ.get("MSTOCK_USERNAME")
+    password = os.environ.get("MSTOCK_PASSWORD")
+    api_key = os.environ.get("MSTOCK_API_KEY")
+    totp_key = os.environ.get("MSTOCK_TOTP_KEY")
+    if username and password:
+        return {
+            "username": username,
+            "password": password,
+            "api_key": api_key or "",
+            "totp_key": totp_key or ""
+        }
     path = os.path.join(WORKSPACE_ROOT, "mstock_credentials.txt")
+    raw = parse_credentials_file(path)
+    # Normalize keys
+    mapped = {}
+    for k, v in raw.items():
+        if "username" in k:
+            mapped["username"] = v
+        elif "password" in k:
+            mapped["password"] = v
+        elif "api_key" in k:
+            mapped["api_key"] = v
+        elif "totp" in k or "2_a" in k or "2a" in k:
+            mapped["totp_key"] = v
+    return mapped
+
+def get_mstock_ka_credentials() -> Dict[str, str]:
+    # Check env variables first
+    username = os.environ.get("MSTOCK_KA_USERNAME")
+    password = os.environ.get("MSTOCK_KA_PASSWORD")
+    api_key = os.environ.get("MSTOCK_KA_API_KEY")
+    totp_key = os.environ.get("MSTOCK_KA_TOTP_KEY")
+    if username and password:
+        return {
+            "username": username,
+            "password": password,
+            "api_key": api_key or "",
+            "totp_key": totp_key or ""
+        }
+    path = os.path.join(WORKSPACE_ROOT, "mstock_credentials_KA.txt")
     raw = parse_credentials_file(path)
     # Normalize keys
     mapped = {}
@@ -89,7 +129,7 @@ class MStockClient:
 
     def login(self) -> MConnect:
         if not all([self.username, self.password, self.api_key, self.totp_key]):
-            raise ValueError("Incomplete MStock credentials in mstock_credentials.txt")
+            raise ValueError("Incomplete MStock credentials")
             
         mconnect = MConnect(timeout=30)
         

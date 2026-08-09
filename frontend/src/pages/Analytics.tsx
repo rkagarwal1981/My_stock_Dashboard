@@ -34,7 +34,7 @@ const SECTOR_COLORS: Record<string, string> = {
   'Others':                 '#475569',
 };
 
-const BROKERS = ['All', 'MStock', 'Zerodha', 'Dhan'];
+const BROKERS = ['All', 'MStock', 'Mstock_KA', 'Zerodha', 'Dhan'];
 
 // ─── Utility: compact INR formatter for labels & axes ─────────────────────────
 //

@@ -49,7 +49,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
       flex: 1,
       minWidth: 100,
       cellRenderer: (p: any) => {
-        const colors: Record<string, string> = { MStock: '#2962ff', Zerodha: '#f59e0b', Dhan: '#10b981' };
+        const colors: Record<string, string> = { MStock: '#2962ff', Mstock_KA: '#b229ff', Zerodha: '#f59e0b', Dhan: '#10b981' };
         return (
           <Chip
             label={p.value}
@@ -264,7 +264,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
     return { purchases, sales, netFlow, netFlowPct, totalPnl, buyOrdersCount, sellOrdersCount };
   }, [filteredOrders]);
 
-  const brokers = ['all', 'MStock', 'Zerodha'];
+  const brokers = ['all', 'MStock', 'Mstock_KA', 'Zerodha'];
 
   if (loading) {
     return (

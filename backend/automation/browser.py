@@ -13,6 +13,7 @@ os.makedirs(COOKIE_DIR, exist_ok=True)
 # broker_name -> {'status': 'IDLE'|'AWAITING_OTP'|'SUCCESS'|'FAILED', 'otp': None, 'error': None}
 automation_states: Dict[str, dict] = {
     "mstock": {"status": "IDLE", "otp": None, "error": None},
+    "mstock_ka": {"status": "IDLE", "otp": None, "error": None},
     "zerodha": {"status": "IDLE", "otp": None, "error": None},
     "dhan": {"status": "IDLE", "otp": None, "error": None}
 }
@@ -388,9 +389,10 @@ def run_zerodha_scraper(username: str, password_decrypted: str, pin_decrypted: O
             
     return holdings
 
-def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Optional[str] = None, totp_key: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None) -> List[dict]:
+def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Optional[str] = None, totp_key: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None, broker: str = "mstock") -> List[dict]:
     """Scrapes holdings from MStock using Type A API client (and Playwright fallback)."""
     holdings = []
+    db_broker = "Mstock_KA" if broker == "mstock_ka" else "MStock"
     
     # Attempt official MStock Type A API Connection
     if api_key:
@@ -413,7 +415,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                     print(f"Error generating TOTP for MStock: {et}")
                     
             if not otp_code:
-                otp_code = wait_for_otp("mstock")
+                otp_code = wait_for_otp(broker)
                 
             # Step 3: Session verification
             try:
@@ -445,36 +447,71 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                     data.extend(holdings_resp)
             except Exception as eh:
                 print(f"Error fetching MStock holdings via get_holdings: {eh}")
-
-            if not data:
-                print("MStock get_holdings returned empty. Querying get_net_position()...")
-                try:
-                    pos_resp = mconnect.get_net_position()
-                    if hasattr(pos_resp, "json"):
-                        resp_json = pos_resp.json()
-                        if isinstance(resp_json, dict) and resp_json.get("data"):
-                            pos_data = resp_json.get("data")
-                            if isinstance(pos_data, dict):
-                                data.extend(pos_data.get("net") or pos_data.get("position") or [])
-                            elif isinstance(pos_data, list):
-                                data.extend(pos_data)
-                except Exception as ep:
-                    print(f"Error fetching MStock positions via get_net_position: {ep}")
-
-            holdings = []
+ 
+            print("Querying get_net_position() for MTF positions...")
+            try:
+                pos_resp = mconnect.get_net_position()
+                if hasattr(pos_resp, "json"):
+                    resp_json = pos_resp.json()
+                    if isinstance(resp_json, dict) and resp_json.get("data"):
+                        pos_data = resp_json.get("data")
+                        if isinstance(pos_data, dict):
+                            raw_positions = pos_data.get("net") or pos_data.get("position") or []
+                        elif isinstance(pos_data, list):
+                            raw_positions = pos_data
+                        else:
+                            raw_positions = []
+                            
+                        for pos in raw_positions:
+                            # product "F" represents MTF positions
+                            if pos.get("product") == "F" and float(pos.get("quantity") or 0) > 0:
+                                data.append(pos)
+            except Exception as ep:
+                print(f"Error fetching MStock positions via get_net_position: {ep}")
+ 
+            parsed_items = []
             for item in data:
-                h = parse_generic_holding(item, "MStock")
+                h = parse_generic_holding(item, db_broker)
                 if h and h["quantity"] > 0:
-                    holdings.append(h)
-
+                    parsed_items.append(h)
+                    
+            # Group by script to merge duplicate CNC and MTF positions
+            grouped = {}
+            for h in parsed_items:
+                script = h["script"]
+                if script not in grouped:
+                    grouped[script] = []
+                grouped[script].append(h)
+                
+            holdings = []
+            for script, items in grouped.items():
+                if len(items) == 1:
+                    holdings.append(items[0])
+                else:
+                    total_qty = sum(x["quantity"] for x in items)
+                    total_cost = sum(x["quantity"] * x["avg_price"] for x in items)
+                    avg_price = round(total_cost / total_qty, 4) if total_qty > 0 else 0.0
+                    first = items[0]
+                    cur_val = total_qty * first["ltp"]
+                    pnl = cur_val - (total_qty * avg_price)
+                    holdings.append({
+                        "broker": first["broker"],
+                        "script": script,
+                        "quantity": total_qty,
+                        "avg_price": avg_price,
+                        "ltp": first["ltp"],
+                        "current_value": cur_val,
+                        "pnl": pnl
+                    })
+ 
             if holdings:
-                automation_states["mstock"]["status"] = "SUCCESS"
+                automation_states[broker]["status"] = "SUCCESS"
                 return holdings
         except Exception as e:
             print(f"MStock API flow failed: {e}. Falling back to browser scraping...")
-
+ 
     # Fallback to Playwright UI Scraper
-    cookie_path = get_cookie_path("mstock")
+    cookie_path = get_cookie_path(broker)
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context_args = {}
@@ -503,7 +540,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                 page.keyboard.press("Enter")
                 time.sleep(2)
                 
-                otp = wait_for_otp("mstock")
+                otp = wait_for_otp(broker)
                 otp_input = page.locator("input[placeholder*='OTP']").first
                 if otp_input.is_visible():
                     otp_input.fill(otp)
@@ -553,7 +590,7 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                         pnl = float(cells[4].inner_text().split('(')[0].replace(",", "").replace("₹", "").strip() or (cur_val - qty * avg_price))
                         
                         holdings.append({
-                            "broker": "MStock",
+                            "broker": db_broker,
                             "script": f"{scrip_text}-EQ" if not scrip_text.endswith("-EQ") else scrip_text,
                             "quantity": qty,
                             "avg_price": avg_price,
@@ -565,10 +602,10 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
                         print(f"Error parsing MStock row: {ex}")
                         continue
                         
-            automation_states["mstock"]["status"] = "SUCCESS"
+            automation_states[broker]["status"] = "SUCCESS"
         except Exception as e:
-            automation_states["mstock"]["status"] = "FAILED"
-            automation_states["mstock"]["error"] = str(e)
+            automation_states[broker]["status"] = "FAILED"
+            automation_states[broker]["error"] = str(e)
             print(f"Error scraping MStock holdings: {e}")
         finally:
             browser.close()

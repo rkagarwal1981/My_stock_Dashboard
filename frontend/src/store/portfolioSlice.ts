@@ -32,6 +32,7 @@ const initialState: PortfolioState = {
   targetCategories: [],
   automation: {
     mstock: { status: 'IDLE', error: null, otpRequired: false },
+    mstock_ka: { status: 'IDLE', error: null, otpRequired: false },
     zerodha: { status: 'IDLE', error: null, otpRequired: false },
     dhan: { status: 'IDLE', error: null, otpRequired: false },
   },

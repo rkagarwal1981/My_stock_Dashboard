@@ -35,12 +35,13 @@ def parse_credentials_file(file_path: str) -> Dict[str, str]:
                 creds[key_norm] = val.strip()
     return creds
 
-def get_mstock_credentials() -> Dict[str, str]:
+def get_mstock_credentials(broker: str = "MStock") -> Dict[str, str]:
     # Check env variables first (passed from backend)
-    username = os.environ.get("MSTOCK_USERNAME")
-    password = os.environ.get("MSTOCK_PASSWORD")
-    api_key = os.environ.get("MSTOCK_API_KEY")
-    totp_key = os.environ.get("MSTOCK_TOTP_KEY")
+    bname = broker.upper()
+    username = os.environ.get(f"{bname}_USERNAME")
+    password = os.environ.get(f"{bname}_PASSWORD")
+    api_key = os.environ.get(f"{bname}_API_KEY")
+    totp_key = os.environ.get(f"{bname}_TOTP_KEY")
     
     if username and password:
         return {
@@ -50,7 +51,8 @@ def get_mstock_credentials() -> Dict[str, str]:
             "totp_key": totp_key or ""
         }
         
-    path = os.path.join(WORKSPACE_ROOT, "mstock_credentials.txt")
+    filename = "mstock_credentials_KA.txt" if broker == "Mstock_KA" else "mstock_credentials.txt"
+    path = os.path.join(WORKSPACE_ROOT, filename)
     raw = parse_credentials_file(path)
     mapped = {}
     for k, v in raw.items():
@@ -101,9 +103,9 @@ def get_current_fy_dates():
     to_date = now.strftime("%Y-%m-%d")
     return from_date, to_date
 
-def save_to_excel(trades: List[dict], output_path: str = None):
+def save_to_excel(trades: List[dict], output_path: str = None, broker: str = "MStock"):
     if output_path is None:
-        output_path = os.path.join(WORKSPACE_ROOT, "Trade History - Mstock.xlsx")
+        output_path = os.path.join(WORKSPACE_ROOT, f"Trade History - {broker}.xlsx")
     df = pd.DataFrame(trades)
     
     if df.empty:
@@ -143,7 +145,7 @@ def save_to_excel(trades: List[dict], output_path: str = None):
     except Exception as e:
         print(f"Error saving to Excel file {output_path}: {e}")
 
-def run_api_flow(creds: Dict[str, str]) -> bool:
+def run_api_flow(creds: Dict[str, str], broker: str = "MStock") -> bool:
     username = creds.get("username")
     password = creds.get("password")
     api_key = creds.get("api_key")
@@ -189,9 +191,9 @@ def run_api_flow(creds: Dict[str, str]) -> bool:
             downloads_dir = os.path.join(WORKSPACE_ROOT, "mstock_tradebook_downloads")
             os.makedirs(downloads_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            excel_backup_path = os.path.join(downloads_dir, f"mstock_trades_download_{timestamp}.xlsx")
-            save_to_excel([], excel_backup_path)
-            save_to_excel([])
+            excel_backup_path = os.path.join(downloads_dir, f"{broker.lower()}_trades_download_{timestamp}.xlsx")
+            save_to_excel([], excel_backup_path, broker=broker)
+            save_to_excel([], broker=broker)
             return True
             
         # Map raw trades to standard excel format
@@ -233,7 +235,7 @@ def run_api_flow(creds: Dict[str, str]) -> bool:
         os.makedirs(downloads_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         
-        json_path = os.path.join(downloads_dir, f"mstock_trades_api_{timestamp}.json")
+        json_path = os.path.join(downloads_dir, f"{broker.lower()}_trades_api_{timestamp}.json")
         try:
             with open(json_path, "w", encoding="utf-8") as jf:
                 json.dump(raw_trades, jf, indent=2)
@@ -242,18 +244,18 @@ def run_api_flow(creds: Dict[str, str]) -> bool:
             print(f"[MStock API] Error saving raw JSON: {ej}")
             
         # Save timestamped Excel backup in downloads folder
-        excel_backup_path = os.path.join(downloads_dir, f"mstock_trades_download_{timestamp}.xlsx")
-        save_to_excel(mapped_trades, excel_backup_path)
+        excel_backup_path = os.path.join(downloads_dir, f"{broker.lower()}_trades_download_{timestamp}.xlsx")
+        save_to_excel(mapped_trades, excel_backup_path, broker=broker)
         
         # Save to main Excel
-        save_to_excel(mapped_trades)
+        save_to_excel(mapped_trades, broker=broker)
         return True
     except Exception as e:
         print(f"[MStock API Error] {e}")
         traceback.print_exc()
         return False
 
-def run_playwright_flow(creds: Dict[str, str]) -> bool:
+def run_playwright_flow(creds: Dict[str, str], broker: str = "MStock") -> bool:
     username = creds.get("username")
     password = creds.get("password")
     totp_key = creds.get("totp_key")
@@ -357,26 +359,26 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
             downloads_dir = os.path.join(WORKSPACE_ROOT, "mstock_tradebook_downloads")
             os.makedirs(downloads_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            excel_backup_path = os.path.join(downloads_dir, f"mstock_trades_download_{timestamp}.xlsx")
+            excel_backup_path = os.path.join(downloads_dir, f"{broker.lower()}_trades_download_{timestamp}.xlsx")
             
             # Save copy to validation directory first
             try:
                 download.save_as(excel_backup_path)
-                print(f"[MStock Playwright] Backup copy saved to {excel_backup_path}")
+                print(f"[{broker} Playwright] Backup copy saved to {excel_backup_path}")
             except Exception as e_copy:
-                print(f"[MStock Playwright] Error saving backup copy: {e_copy}")
+                print(f"[{broker} Playwright] Error saving backup copy: {e_copy}")
                 
             # Now save to main path
-            target_path = os.path.join(WORKSPACE_ROOT, "Trade History - Mstock.xlsx")
+            target_path = os.path.join(WORKSPACE_ROOT, f"Trade History - {broker}.xlsx")
             try:
                 download.save_as(target_path)
-                print(f"[MStock Playwright] Downloaded spreadsheet saved to {target_path}")
+                print(f"[{broker} Playwright] Downloaded spreadsheet saved to {target_path}")
             except PermissionError:
                 print(f"\n[WARNING] Permission denied when writing to '{target_path}'.")
                 print("This usually happens if you have the file open in Microsoft Excel.")
                 print("Please close Excel so the file can be updated during the next sync.\n")
             except Exception as e_main:
-                print(f"[MStock Playwright] Error saving main file: {e_main}")
+                print(f"[{broker} Playwright] Error saving main file: {e_main}")
                 
             success = True
             
@@ -389,29 +391,38 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
     return success
 
 def main():
+    global COOKIE_PATH
     parser = argparse.ArgumentParser(description="Pull MStock Trade History")
     parser.add_argument("--force", action="store_true", help="Force pull trades skipping daily cache check")
+    parser.add_argument("--broker", type=str, choices=["MStock", "Mstock_KA"], default="MStock", help="MStock broker account name")
     args = parser.parse_args()
     
-    if should_skip_pull("mstock", args.force):
-        print("MStock trades already pulled today. Skipping.")
+    broker = args.broker
+    broker_lower = broker.lower()
+    
+    # Adjust dynamic COOKIE_PATH based on broker
+    if broker == "Mstock_KA":
+        COOKIE_PATH = os.path.join(COOKIE_DIR, "mstock_ka_session.json")
+        
+    if should_skip_pull(broker_lower, args.force):
+        print(f"{broker} trades already pulled today. Skipping.")
         sys.exit(0)
         
-    creds = get_mstock_credentials()
+    creds = get_mstock_credentials(broker=broker)
     if not creds:
-        print("Error: No MStock credentials configured.")
+        print(f"Error: No credentials configured for {broker}.")
         sys.exit(1)
         
-    success = run_api_flow(creds)
+    success = run_api_flow(creds, broker=broker)
     if not success:
         print("API flow failed. Falling back to Playwright...")
-        success = run_playwright_flow(creds)
+        success = run_playwright_flow(creds, broker=broker)
         
     if success:
-        update_cache("mstock")
-        print("MStock trade history sync completed successfully.")
+        update_cache(broker_lower)
+        print(f"{broker} trade history sync completed successfully.")
     else:
-        print("Failed to sync MStock trade history.")
+        print(f"Failed to sync {broker} trade history.")
         sys.exit(1)
 
 if __name__ == "__main__":

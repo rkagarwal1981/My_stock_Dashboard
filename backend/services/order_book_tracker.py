@@ -22,6 +22,7 @@ from services.market_data import fetch_live_prices
 from services.importer import normalize_script_name
 from services.broker_api import (
     get_mstock_credentials,
+    get_mstock_ka_credentials,
     get_zerodha_credentials,
     MStockClient
 )
@@ -283,12 +284,16 @@ def fetch_zerodha_orders(kite: KiteConnect) -> List[dict]:
         print(f"[Order Tracker] Error fetching Zerodha orders: {e}")
     return orders
 
-def fetch_mstock_orders() -> List[dict]:
+def fetch_mstock_orders(broker: str = "MStock") -> List[dict]:
     """
     Fetches MStock trade book executions for today.
     """
     orders = []
-    creds = get_mstock_credentials()
+    if broker == "Mstock_KA":
+        creds = get_mstock_ka_credentials()
+    else:
+        creds = get_mstock_credentials()
+        
     if not creds:
         return orders
         
@@ -339,7 +344,7 @@ def fetch_mstock_orders() -> List[dict]:
                 exec_time = datetime.now()
                 
             orders.append({
-                "broker": "MStock",
+                "broker": broker,
                 "script": script,
                 "buy_sell": buy_sell,
                 "quantity": qty,
@@ -349,7 +354,7 @@ def fetch_mstock_orders() -> List[dict]:
                 "execution_time": exec_time
             })
     except Exception as e:
-        print(f"[Order Tracker] Error fetching MStock orders from trade book: {e}")
+        print(f"[Order Tracker] Error fetching {broker} orders from trade book: {e}")
     return orders
 
 def sync_executed_orders(force: bool = False) -> int:
@@ -384,9 +389,14 @@ def sync_executed_orders(force: bool = False) -> int:
         all_orders = []
         
         # MStock
-        mstock_orders = fetch_mstock_orders()
+        mstock_orders = fetch_mstock_orders("MStock")
         all_orders.extend(mstock_orders)
         print(f"[Order Tracker] Fetched {len(mstock_orders)} MStock orders.")
+        
+        # Mstock_KA
+        mstock_ka_orders = fetch_mstock_orders("Mstock_KA")
+        all_orders.extend(mstock_ka_orders)
+        print(f"[Order Tracker] Fetched {len(mstock_ka_orders)} Mstock_KA orders.")
         
         # Zerodha
         kite = get_zerodha_api_client()
