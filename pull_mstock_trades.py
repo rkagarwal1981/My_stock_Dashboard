@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from playwright.sync_api import sync_playwright
 
 # Set this to False if you want to run Playwright headlessly
-HEADLESS = False
+HEADLESS = True
 
 WORKSPACE_ROOT = os.path.dirname(os.path.abspath(__file__))
 COOKIE_DIR = os.path.join(WORKSPACE_ROOT, "backend", "database", "cookies")
@@ -277,32 +277,51 @@ def run_playwright_flow(creds: Dict[str, str], broker: str = "MStock") -> bool:
             time.sleep(3)
             
             # Check login
-            if "login" in page.url or page.locator("input[placeholder*='User ID']").is_visible():
+            if not os.path.exists(COOKIE_PATH) or "login" in page.url or page.locator("input[placeholder*='User ID']").is_visible():
                 print("[MStock Playwright] Performing Login...")
                 page.goto("https://trade.mstock.com/#/login")
-                time.sleep(2)
                 
+                # Wait for User ID and fill
+                page.wait_for_selector("input[placeholder*='User ID']", timeout=20000)
                 user_input = page.locator("input[placeholder*='User ID']").first
-                if user_input.is_visible():
-                    user_input.fill(username)
-                    page.keyboard.press("Enter")
-                    time.sleep(1.5)
-                    
+                user_input.fill(username)
+                page.keyboard.press("Enter")
+                time.sleep(1)
+                
+                # Wait for Password and fill
+                page.wait_for_selector("input[type='password']", timeout=20000)
                 pass_input = page.locator("input[type='password']").first
-                if pass_input.is_visible():
-                    pass_input.fill(password)
+                pass_input.fill(password)
+                page.keyboard.press("Enter")
+                time.sleep(1)
+                
+                # Wait up to 5s for OTP/TOTP selector
+                try:
+                    page.wait_for_selector("input[placeholder*='OTP'], input[type='tel']", timeout=8000)
+                    print("[MStock Playwright] OTP/TOTP page detected, generating code...")
+                    otp = pyotp.TOTP(totp_key.strip()).now()
+                    
+                    otp_fields = page.locator("input[type='tel']").all()
+                    if len(otp_fields) == 6:
+                        print(f"[MStock Playwright] Entering 6-digit TOTP: {otp}")
+                        for idx, char in enumerate(otp):
+                            otp_fields[idx].fill(char)
+                    else:
+                        otp_input = page.locator("input[placeholder*='OTP']").first
+                        otp_input.fill(otp)
+                        
                     page.keyboard.press("Enter")
                     time.sleep(2)
                     
-                otp_input = page.locator("input[placeholder*='OTP']").first
-                if otp_input.is_visible():
-                    print("[MStock Playwright] TOTP required, generating...")
-                    otp = pyotp.TOTP(totp_key.strip()).now()
-                    otp_input.fill(otp)
-                    page.keyboard.press("Enter")
-                    time.sleep(4)
+                    # Click Submit if visible
+                    submit_btn = page.locator("button:has-text('Submit'), .btn-primary").first
+                    if submit_btn.is_visible():
+                        submit_btn.click()
+                        time.sleep(2)
+                except Exception as eo:
+                    print(f"[MStock Playwright] Error or no OTP field requested: {eo}")
                     
-                page.wait_for_url("**/reports/TradeHistory", timeout=20000)
+                page.wait_for_url("**/reports/TradeHistory", timeout=30000)
                 context.storage_state(path=COOKIE_PATH)
                 
             print("[MStock Playwright] Logged in. Navigating to reports...")

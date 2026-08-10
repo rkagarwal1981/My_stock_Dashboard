@@ -458,6 +458,64 @@ def sync_executed_orders(force: bool = False) -> int:
                     execution_time=o["execution_time"]
                 )
                 db.add(new_ord)
+        # 4. Fallback: Pull today's transactions from the transactions table
+        # to ensure that files imported manually/scraped (e.g. for Mstock_KA) appear in the Order Book.
+        from models.transaction import Transaction
+        from datetime import time as dt_time
+        today_start = datetime.combine(datetime.now().date(), dt_time.min)
+        
+        today_txs = db.query(Transaction).filter(
+            Transaction.transaction_date >= today_start
+        ).all()
+        
+        # Fetch live prices for today's transactions if not already fetched
+        tx_scrips = [t.script for t in today_txs if t.script and t.script not in live_prices]
+        if tx_scrips:
+            try:
+                live_prices.update(fetch_live_prices(tx_scrips))
+            except Exception as ep:
+                print(f"[Order Tracker] Failed to fetch live prices for today's transactions: {ep}")
+                
+        for tx in today_txs:
+            order_id = tx.trade_id or tx.order_number or f"TX_{tx.id}"
+            
+            # Check if this order_id is already registered
+            exists = db.query(ExecutedOrder).filter_by(order_id=str(order_id)).first()
+            
+            # Fetch LTP
+            ltp = tx.price
+            if tx.script in live_prices and live_prices[tx.script]["price"] > 0:
+                ltp = live_prices[tx.script]["price"]
+                
+            # Calculate P&L
+            if tx.buy_sell == "BUY":
+                pnl = (ltp - tx.price) * tx.quantity
+                pnl_pct = ((ltp - tx.price) / tx.price * 100) if tx.price > 0 else 0.0
+            else:
+                pnl = (tx.price - ltp) * tx.quantity
+                pnl_pct = ((tx.price - ltp) / tx.price * 100) if tx.price > 0 else 0.0
+                
+            if exists:
+                # Update LTP and P&L dynamically
+                exists.ltp = ltp
+                exists.pnl = pnl
+                exists.pnl_pct = pnl_pct
+            else:
+                # Insert new executed order from transactions
+                new_ord = ExecutedOrder(
+                    broker=tx.broker,
+                    script=tx.script,
+                    buy_sell=tx.buy_sell,
+                    quantity=tx.quantity,
+                    price=tx.price,
+                    ltp=ltp,
+                    amount=tx.quantity * tx.price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    order_id=str(order_id),
+                    execution_time=tx.transaction_date
+                )
+                db.add(new_ord)
                 count += 1
                 
         db.commit()

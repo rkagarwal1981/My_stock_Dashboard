@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from playwright.sync_api import sync_playwright
 
 # Set this to False if you want to run Playwright headlessly
-HEADLESS = False
+HEADLESS = True
 
 # Define directories
 WORKSPACE_ROOT = os.path.dirname(os.path.abspath(__file__))

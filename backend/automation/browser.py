@@ -524,30 +524,54 @@ def run_mstock_scraper(username: str, password_decrypted: str, pin_decrypted: Op
             page.goto("https://trade.mstock.com/#/index/watchlist/Portfolio", timeout=30000)
             time.sleep(2)
             
-            if "login" in page.url or page.locator("input#loginId").is_visible() or page.locator("input[placeholder*='User ID']").is_visible():
+            if not os.path.exists(cookie_path) or "login" in page.url or page.locator("input#loginId").is_visible() or page.locator("#username").is_visible():
                 page.goto("https://trade.mstock.com/#/login")
                 time.sleep(2)
                 
-                user_input = page.locator("input[placeholder*='User ID']").first
-                if user_input.is_visible():
-                    user_input.fill(username)
+                # Click Login with Credentials if needed
+                try:
+                    page.wait_for_selector("text=Login with Credentials", timeout=5000)
+                    page.click("text=Login with Credentials")
+                except Exception:
+                    pass
                 
+                # Wait for User ID and fill
+                page.wait_for_selector("#username", timeout=15000)
+                user_input = page.locator("#username").first
+                user_input.fill(username)
                 page.keyboard.press("Enter")
                 time.sleep(1)
                 
-                pass_input = page.locator("input[type='password']").first
+                # Wait for Password and fill
+                page.wait_for_selector("#password-field", timeout=15000)
+                pass_input = page.locator("#password-field").first
                 pass_input.fill(password_decrypted)
                 page.keyboard.press("Enter")
                 time.sleep(2)
                 
+                # Wait for OTP/TOTP selector
+                page.wait_for_selector("input[placeholder*='OTP'], input[type='tel']", timeout=15000)
                 otp = wait_for_otp(broker)
-                otp_input = page.locator("input[placeholder*='OTP']").first
-                if otp_input.is_visible():
-                    otp_input.fill(otp)
-                    page.keyboard.press("Enter")
-                    time.sleep(3)
                 
-                page.wait_for_url("**/watchlist/Portfolio", timeout=20000)
+                otp_fields = page.locator("input[type='tel']").all()
+                if len(otp_fields) == 6:
+                    print(f"Entering 6-digit OTP/TOTP...")
+                    for idx, char in enumerate(otp):
+                        otp_fields[idx].fill(char)
+                else:
+                    otp_input = page.locator("input[placeholder*='OTP']").first
+                    otp_input.fill(otp)
+                    
+                page.keyboard.press("Enter")
+                time.sleep(2)
+                
+                # Click Submit if visible
+                submit_btn = page.locator("button:has-text('Submit'), .btn-primary").first
+                if submit_btn.is_visible():
+                    submit_btn.click()
+                    time.sleep(2)
+                
+                page.wait_for_url("**/watchlist/Portfolio", timeout=30000)
                 context.storage_state(path=cookie_path)
                 
             page.wait_for_selector(".portfolio-grid, .portfolio-row, tr", timeout=15000)
