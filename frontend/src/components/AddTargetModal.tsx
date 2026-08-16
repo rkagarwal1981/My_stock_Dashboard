@@ -225,27 +225,36 @@ export const AddTargetModal: React.FC<AddTargetModalProps> = ({
           sx={{ mb: 2 }}
         />
 
-        {/* Bookmark Selection */}
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="body2" sx={{ fontSize: 13, mr: 1 }}>Bookmark:</Typography>
-          {BOOKMARK_COLORS.map(b => (
-            <Tooltip key={b.key} title={b.label}>
-              <IconButton
-                size="small"
-                onClick={() => setBookmark(bookmark === b.key ? '' : b.key)}
-                sx={{
-                  color: bookmark === b.key ? b.color : 'rgba(255,255,255,0.2)',
-                  border: bookmark === b.key ? `2px solid ${b.color}` : '2px solid transparent',
-                  borderRadius: 1,
-                  transition: 'all 0.2s',
-                  '&:hover': { color: b.color }
-                }}
-              >
-                <FlagIcon sx={{ fontSize: 20 }} />
-              </IconButton>
-            </Tooltip>
-          ))}
-        </Box>
+        {/* Bookmark Select Dropdown */}
+        <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+          <InputLabel>Bookmark</InputLabel>
+          <Select
+            value={bookmark}
+            label="Bookmark"
+            onChange={(e) => setBookmark(e.target.value)}
+            renderValue={(value) => {
+              const selected = BOOKMARK_COLORS.find(b => b.key === value);
+              return selected ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <FlagIcon sx={{ fontSize: 16, color: selected.color }} />
+                  {selected.label}
+                </Box>
+              ) : 'None';
+            }}
+          >
+            <MenuItem value="">
+              <em>None</em>
+            </MenuItem>
+            {BOOKMARK_COLORS.map(b => (
+              <MenuItem key={b.key} value={b.key}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <FlagIcon sx={{ fontSize: 16, color: b.color }} />
+                  {b.label}
+                </Box>
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
       </DialogContent>
 
       <DialogActions sx={{ p: 2, pt: 0 }}>

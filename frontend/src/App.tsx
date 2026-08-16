@@ -12,7 +12,8 @@ import {
   setAuditLogs,
   setAutomationStatus,
   setTargets,
-  setTargetCategories
+  setTargetCategories,
+  addNotifiedTargetId
 } from './store/portfolioSlice';
 
 // Import Pages
@@ -57,7 +58,8 @@ import {
   DialogActions,
   Divider,
   Snackbar,
-  Alert
+  Alert,
+  Chip
 } from '@mui/material';
 
 // Icons
@@ -78,6 +80,7 @@ import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import StarIcon from '@mui/icons-material/Star';
 import PieChartIcon from '@mui/icons-material/PieChart';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 
 const drawerWidth = 260;
 
@@ -120,12 +123,18 @@ function App() {
   const dispatch = useDispatch();
   const { isAuthenticated, username } = useAppSelector((state) => state.auth);
   const allHoldings = useAppSelector((state) => state.portfolio.holdings);
+  const targets = useAppSelector((state) => state.portfolio.targets);
+  const notifiedTargetIds = useAppSelector((state) => state.portfolio.notifiedTargetIds);
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
 
   // Refresh tracking
   const [priceTimer, setPriceTimer] = useState<number>(10);
+  const [triggeredDialog, setTriggeredDialog] = useState<{ open: boolean; items: any[] }>({
+    open: false,
+    items: [],
+  });
   const [holdingsTimer, setHoldingsTimer] = useState<number>(30);
   const [globalLoading, setGlobalLoading] = useState<boolean>(false);
   const [notification, setNotification] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
@@ -300,6 +309,45 @@ function App() {
       fetchAllData(true);
     }
   }, [isAuthenticated]);
+
+  // Watch for newly triggered targets
+  useEffect(() => {
+    if (!isAuthenticated || !targets || targets.length === 0) return;
+
+    const newlyTriggered = targets.filter((t: any) => {
+      return t.is_triggered_live && !t.triggered && !notifiedTargetIds.includes(t.id);
+    });
+
+    if (newlyTriggered.length > 0) {
+      newlyTriggered.forEach((t: any) => {
+        dispatch(addNotifiedTargetId(t.id));
+      });
+
+      setTriggeredDialog((prev) => ({
+        open: true,
+        items: [...prev.items, ...newlyTriggered].filter(
+          (item, idx, self) => self.findIndex((x) => x.id === item.id) === idx
+        ),
+      }));
+    }
+  }, [targets, notifiedTargetIds, isAuthenticated, dispatch]);
+
+  const handleAcknowledgeTriggeredTargets = async () => {
+    const itemsToAcknowledge = triggeredDialog.items;
+    setTriggeredDialog({ open: false, items: [] });
+    try {
+      await Promise.all(
+        itemsToAcknowledge.map((t) =>
+          axios.put(`/api/targets/${t.id}`, { triggered: 1 })
+        )
+      );
+      const targetsRes = await axios.get('/api/targets');
+      dispatch(setTargets(targetsRes.data));
+    } catch (err) {
+      console.error('Failed to acknowledge targets:', err);
+      showToast('Failed to acknowledge some targets.', 'error');
+    }
+  };
 
   // Timers for live data refreshing
   useEffect(() => {
@@ -603,6 +651,96 @@ function App() {
             </Button>
             <Button variant="contained" onClick={handleSubmitOtp} disabled={!otpModal.otpText}>
               Submit Verification
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Persistent Target Triggered Notification Dialog */}
+        <Dialog
+          open={triggeredDialog.open}
+          maxWidth="sm"
+          fullWidth
+          slotProps={{
+            paper: {
+              sx: {
+                background: '#161824',
+                border: '2px solid #ef4444',
+                borderRadius: 3,
+              }
+            }
+          }}
+        >
+          <DialogTitle sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1.5, color: '#ef4444' }}>
+            <NotificationsActiveIcon className="pulse-animation" />
+            Price Target Triggered!
+          </DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" sx={{ mb: 2, color: 'text.secondary' }}>
+              The following stock target price conditions have been met:
+            </Typography>
+            
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              {triggeredDialog.items.map((t: any) => {
+                let daysText = 'Today';
+                if (t.date) {
+                  const targetDate = new Date(t.date);
+                  const today = new Date();
+                  const d1 = Date.UTC(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+                  const d2 = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+                  const diffDays = Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
+                  daysText = diffDays === 0 ? 'Today' : `${diffDays} days ago`;
+                }
+
+                return (
+                  <Box
+                    key={t.id}
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 2,
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.2)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 0.5
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700, color: '#f8fafc' }}>
+                        {t.script && t.script.endsWith('-EQ') ? t.script.slice(0, -3) : (t.script || '')}
+                      </Typography>
+                      <Chip
+                        label={t.type}
+                        size="small"
+                        sx={{
+                          bgcolor: t.type === 'Buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                          color: t.type === 'Buy' ? '#10b981' : '#ef4444',
+                          fontWeight: 700,
+                          fontSize: 11
+                        }}
+                      />
+                    </Box>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'text.secondary' }}>
+                      <span>Target Price: <strong>₹{t.target_price}</strong></span>
+                      <span>LTP: <strong>₹{Math.round(t.ltp || 0)}</strong></span>
+                    </Box>
+                    <Box sx={{ fontSize: 12, color: 'text.secondary', display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                      <span>Added: {daysText}</span>
+                      {t.comment && <span>Comment: {t.comment}</span>}
+                    </Box>
+                  </Box>
+                );
+              })}
+            </Box>
+          </DialogContent>
+          <DialogActions sx={{ p: 2, pt: 1 }}>
+            <Button
+              variant="contained"
+              color="error"
+              onClick={handleAcknowledgeTriggeredTargets}
+              fullWidth
+              sx={{ fontWeight: 600, py: 1, borderRadius: 2 }}
+            >
+              OK
             </Button>
           </DialogActions>
         </Dialog>

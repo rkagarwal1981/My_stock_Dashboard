@@ -5,13 +5,19 @@ import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
 import {
   Box, Typography, Card, CardContent, Grid, Chip,
-  Tab, Tabs, Button, Popover, Table, TableHead, TableBody, TableRow, TableCell, Tooltip as MuiTooltip
+  Tab, Tabs, Button, Popover, Table, TableHead, TableBody, TableRow, TableCell, Tooltip as MuiTooltip,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  FormControl, InputLabel, Select, MenuItem, TextField, IconButton,
 } from '@mui/material';
 import StorefrontIcon from '@mui/icons-material/Storefront';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import DownloadIcon from '@mui/icons-material/Download';
 import AttachmentIcon from '@mui/icons-material/Attachment';
+import AddIcon from '@mui/icons-material/Add';
+import TrackChangesIcon from '@mui/icons-material/TrackChanges';
+import DeleteIcon from '@mui/icons-material/Delete';
+import FlagIcon from '@mui/icons-material/Flag';
 import axios from 'axios';
 
 interface HoldingsProps {
@@ -36,6 +42,61 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
       .then(res => setResearchStatus(res.data || {}))
       .catch(() => { /* non-critical, silently ignore */ });
   }, []);
+
+  // ── Add Target dialog state (self-contained in Holdings) ──────────────────
+  const BOOKMARK_COLORS = [
+    { key: 'red', color: '#ef4444', label: 'Red' },
+    { key: 'orange', color: '#f59e0b', label: 'Orange' },
+    { key: 'yellow', color: '#eab308', label: 'Yellow' },
+    { key: 'green', color: '#10b981', label: 'Green' },
+    { key: 'blue', color: '#2962ff', label: 'Blue' },
+  ];
+  const [tgtDialogOpen, setTgtDialogOpen] = useState(false);
+  const [tgtRows, setTgtRows] = useState<{ type: string; target_price: string }[]>([{ type: 'Buy', target_price: '' }]);
+  const [tgtCommon, setTgtCommon] = useState({ script: '', category: '', comment: '', bookmark: '' });
+  const [tgtCategories, setTgtCategories] = useState<string[]>([]);
+
+  // Fetch categories once on mount
+  useEffect(() => {
+    axios.get('/api/target-categories')
+      .then(res => setTgtCategories(res.data || []))
+      .catch(() => {});
+  }, []);
+
+  const resetTgtDialog = () => {
+    setTgtDialogOpen(false);
+    setTgtRows([{ type: 'Buy', target_price: '' }]);
+    setTgtCommon({ script: '', category: '', comment: '', bookmark: '' });
+  };
+
+  const openAddTargetForScript = (script: string) => {
+    setTgtRows([{ type: 'Buy', target_price: '' }]);
+    setTgtCommon({ script, category: '', comment: '', bookmark: '' });
+    setTgtDialogOpen(true);
+  };
+
+  const handleSaveTargets = async () => {
+    if (!tgtCommon.script) return;
+    const validRows = tgtRows.filter(r => r.target_price);
+    if (validRows.length === 0) return;
+    try {
+      for (const row of validRows) {
+        await axios.post('/api/targets', {
+          script: tgtCommon.script,
+          type: row.type,
+          target_price: parseFloat(row.target_price),
+          category: tgtCommon.category || null,
+          comment: tgtCommon.comment || null,
+          bookmark: tgtCommon.bookmark || null,
+        });
+      }
+      if (showToast) showToast(`${validRows.length} target(s) added for ${tgtCommon.script}`, 'success');
+      resetTgtDialog();
+    } catch (e: any) {
+      console.error('Failed to save target:', e);
+      if (showToast) showToast(e.response?.data?.detail || 'Failed to add target.', 'error');
+    }
+  };
 
   const handleExport = async (format: 'excel' | 'csv') => {
     try {
@@ -244,6 +305,39 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
           <span style={{ color, fontWeight: 600, display: 'block', textAlign: 'right', width: '100%' }}>
             {p.value >= 0 ? '+' : ''}{p.value.toFixed(2)}%
           </span>
+        );
+      }
+    },
+    {
+      headerName: 'Target',
+      flex: 1,
+      minWidth: 110,
+      cellRenderer: (p: any) => {
+        return (
+          <Button
+            variant="contained"
+            size="small"
+            onClick={(e: React.MouseEvent) => {
+              e.stopPropagation();
+              openAddTargetForScript(p.data.script);
+            }}
+            sx={{
+              textTransform: 'none',
+              fontSize: '11px',
+              bgcolor: 'rgba(41,98,255,0.15)',
+              color: '#2962ff',
+              border: '1px solid rgba(41,98,255,0.3)',
+              '&:hover': {
+                bgcolor: 'rgba(41,98,255,0.3)',
+              },
+              height: '24px',
+              borderRadius: '4px',
+              fontWeight: 600,
+              mt: '4px'
+            }}
+          >
+            Add Tgt
+          </Button>
         );
       }
     },
@@ -661,6 +755,149 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
           </Table>
         </Box>
       </Popover>
+
+      {/* ── Add Target Dialog (same as Target Setting) ──────────────────── */}
+      <Dialog
+        open={tgtDialogOpen}
+        onClose={resetTgtDialog}
+        maxWidth="sm"
+        fullWidth
+        slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
+      >
+        <DialogTitle sx={{ fontWeight: 600 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <TrackChangesIcon sx={{ color: '#2962ff' }} />
+            Add New Target
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {/* Stock Name — read-only, auto-filled */}
+          <TextField
+            label="Stock Name"
+            size="small"
+            fullWidth
+            value={tgtCommon.script.endsWith('-EQ') ? tgtCommon.script.slice(0, -3) : tgtCommon.script}
+            disabled
+            sx={{ mt: 1.5, mb: 2 }}
+          />
+
+          {/* Type / Target Price rows */}
+          {tgtRows.map((row, idx) => (
+            <Box key={idx} sx={{ display: 'flex', gap: 2, mb: 1.5, alignItems: 'center' }}>
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel>Type</InputLabel>
+                <Select
+                  value={row.type}
+                  label="Type"
+                  onChange={(e) => {
+                    const updated = [...tgtRows];
+                    updated[idx] = { ...updated[idx], type: e.target.value };
+                    setTgtRows(updated);
+                  }}
+                >
+                  <MenuItem value="Buy">Buy</MenuItem>
+                  <MenuItem value="Sell">Sell</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                label="Target Price"
+                type="number"
+                size="small"
+                value={row.target_price}
+                onChange={(e) => {
+                  const updated = [...tgtRows];
+                  updated[idx] = { ...updated[idx], target_price: e.target.value };
+                  setTgtRows(updated);
+                }}
+                sx={{ flex: 1 }}
+              />
+              {tgtRows.length > 1 && (
+                <IconButton
+                  size="small"
+                  onClick={() => setTgtRows(tgtRows.filter((_, i) => i !== idx))}
+                  sx={{ color: '#ef4444', '&:hover': { bgcolor: 'rgba(239,68,68,0.1)' } }}
+                >
+                  <DeleteIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              )}
+            </Box>
+          ))}
+
+          {/* +Add More */}
+          <Button
+            size="small"
+            startIcon={<AddIcon />}
+            onClick={() => setTgtRows([...tgtRows, { type: 'Buy', target_price: '' }])}
+            sx={{
+              textTransform: 'none', fontSize: 12, fontWeight: 600,
+              color: '#2962ff', mb: 2,
+              '&:hover': { bgcolor: 'rgba(41,98,255,0.08)' },
+            }}
+          >
+            Add More
+          </Button>
+
+          {/* Category */}
+          <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+            <InputLabel>Category</InputLabel>
+            <Select
+              value={tgtCommon.category}
+              label="Category"
+              onChange={(e) => setTgtCommon({ ...tgtCommon, category: e.target.value })}
+            >
+              {tgtCategories.map(cat => (
+                <MenuItem key={cat} value={cat}>{cat}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Comment */}
+          <TextField
+            fullWidth multiline rows={3} size="small" label="Comments"
+            value={tgtCommon.comment}
+            onChange={(e) => setTgtCommon({ ...tgtCommon, comment: e.target.value })}
+            sx={{ mb: 2 }}
+          />
+
+          {/* Bookmark */}
+          <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+            <InputLabel>Bookmark</InputLabel>
+            <Select
+              value={tgtCommon.bookmark}
+              label="Bookmark"
+              onChange={(e) => setTgtCommon({ ...tgtCommon, bookmark: e.target.value })}
+              renderValue={(value) => {
+                const sel = BOOKMARK_COLORS.find(b => b.key === value);
+                return sel ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FlagIcon sx={{ fontSize: 16, color: sel.color }} /> {sel.label}
+                  </Box>
+                ) : 'None';
+              }}
+            >
+              <MenuItem value=""><em>None</em></MenuItem>
+              {BOOKMARK_COLORS.map(b => (
+                <MenuItem key={b.key} value={b.key}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FlagIcon sx={{ fontSize: 16, color: b.color }} /> {b.label}
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, pt: 0 }}>
+          <Button onClick={resetTgtDialog} sx={{ textTransform: 'none' }}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveTargets}
+            disabled={tgtRows.every(r => !r.target_price)}
+            sx={{ textTransform: 'none', borderRadius: 2 }}
+          >
+            {`Add Target${tgtRows.length > 1 ? `s (${tgtRows.filter(r => r.target_price).length})` : ''}`}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

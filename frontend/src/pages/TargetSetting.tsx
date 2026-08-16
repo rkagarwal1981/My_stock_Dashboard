@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useAppSelector } from '../store';
+import { useAppSelector, useAppDispatch } from '../store';
+import { removeNotifiedTargetId } from '../store/portfolioSlice';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, Button, Chip, Switch, Slider,
   FormControl, InputLabel, Select, MenuItem, TextField, Dialog, DialogTitle,
   DialogContent, DialogActions, IconButton, Tooltip, Autocomplete,
-  FormControlLabel, LinearProgress
+  FormControlLabel, LinearProgress, Menu
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -30,7 +31,39 @@ const BOOKMARK_COLORS: { key: string; color: string; label: string }[] = [
   { key: 'blue', color: '#2962ff', label: 'Blue' },
 ];
 
+const getCategoryStyles = (category: string) => {
+  if (!category) return { bgcolor: 'rgba(255,255,255,0.05)', color: '#64748b', border: '1px solid rgba(255,255,255,0.1)' };
+  const normalized = category.trim().toLowerCase();
+  switch (normalized) {
+    case 'technical':
+      return { bgcolor: 'rgba(41, 98, 255, 0.15)', color: '#2962ff', border: '1px solid rgba(41, 98, 255, 0.3)' };
+    case 'fundamental':
+      return { bgcolor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)' };
+    case 'target change':
+      return { bgcolor: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', border: '1px solid rgba(245, 158, 11, 0.3)' };
+    case 'news':
+      return { bgcolor: 'rgba(244, 63, 94, 0.15)', color: '#f43f5e', border: '1px solid rgba(244, 63, 94, 0.3)' };
+    case 'general':
+      return { bgcolor: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.3)' };
+    case 'mutual funds':
+      return { bgcolor: 'rgba(6, 182, 212, 0.15)', color: '#06b6d4', border: '1px solid rgba(6, 182, 212, 0.3)' };
+    default: {
+      let hash = 0;
+      for (let i = 0; i < category.length; i++) {
+        hash = category.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const hue = Math.abs(hash % 360);
+      return {
+        bgcolor: `hsla(${hue}, 70%, 50%, 0.15)`,
+        color: `hsl(${hue}, 85%, 65%)`,
+        border: `1px solid hsla(${hue}, 70%, 50%, 0.3)`,
+      };
+    }
+  }
+};
+
 const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
+  const dispatch = useAppDispatch();
   const allHoldings = useAppSelector((state) => state.portfolio.holdings);
 
   const [targets, setTargets] = useState<any[]>([]);
@@ -47,10 +80,13 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
   // Add / Edit target dialog state
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<any | null>(null); // null = create mode
-  const [newTarget, setNewTarget] = useState({
+  // For create mode, targetRows holds multiple Type/Price pairs.
+  // For edit mode, only the first entry is used.
+  const [targetRows, setTargetRows] = useState<{ type: string; target_price: string }[]>([
+    { type: 'Buy', target_price: '' },
+  ]);
+  const [dialogCommon, setDialogCommon] = useState({
     script: '',
-    type: 'Buy',
-    target_price: '',
     category: '',
     comment: '',
     bookmark: '',
@@ -103,6 +139,26 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     return new Set(allHoldings.map((h: any) => h.script));
   }, [allHoldings]);
 
+  // Build an aggregated holdings lookup keyed by script.
+  // Stocks held across multiple brokers are summed for qty & current_value;
+  // change_in_ltp_pct is taken from the first occurrence (same stock = same LTP).
+  const holdingsMap = useMemo(() => {
+    const map: Record<string, { qty: number; currentValue: number; ltpChgPct: number | null }> = {};
+    for (const h of allHoldings) {
+      const key = h.script as string;
+      if (!map[key]) {
+        map[key] = { qty: 0, currentValue: 0, ltpChgPct: h.change_in_ltp_pct ?? null };
+      }
+      map[key].qty += Number(h.quantity || 0);
+      map[key].currentValue += Number(h.current_value || 0);
+      // Keep first non-null LTP change %
+      if (map[key].ltpChgPct == null && h.change_in_ltp_pct != null) {
+        map[key].ltpChgPct = h.change_in_ltp_pct;
+      }
+    }
+    return map;
+  }, [allHoldings]);
+
   // Filtered data
   const filteredTargets = useMemo(() => {
     let data = [...targets];
@@ -143,12 +199,21 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     return data;
   }, [targets, holdingsOnly, proximityThreshold, bookmarkFilter, recencyFilter, holdingScripts]);
 
+  const resetDialog = () => {
+    setAddDialogOpen(false);
+    setEditTarget(null);
+    setTargetRows([{ type: 'Buy', target_price: '' }]);
+    setDialogCommon({ script: '', category: '', comment: '', bookmark: '' });
+  };
+
   const handleOpenEdit = (target: any) => {
     setEditTarget(target);
-    setNewTarget({
-      script: target.script || '',
+    setTargetRows([{
       type: target.type || 'Buy',
       target_price: target.target_price != null ? String(target.target_price) : '',
+    }]);
+    setDialogCommon({
+      script: target.script || '',
       category: target.category || '',
       comment: target.comment || '',
       bookmark: target.bookmark || '',
@@ -157,32 +222,35 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
   };
 
   const handleAddOrSaveTarget = async () => {
-    if (!newTarget.target_price) return;
     try {
       if (editTarget) {
-        // Edit mode — PUT (backend auto-overwrites date)
+        // Edit mode — single target PUT
+        const row = targetRows[0];
+        if (!row.target_price) return;
         await axios.put(`/api/targets/${editTarget.id}`, {
-          type: newTarget.type,
-          target_price: parseFloat(newTarget.target_price),
-          category: newTarget.category || null,
-          comment: newTarget.comment || null,
-          bookmark: newTarget.bookmark || null,
+          type: row.type,
+          target_price: parseFloat(row.target_price),
+          category: dialogCommon.category || null,
+          comment: dialogCommon.comment || null,
+          bookmark: dialogCommon.bookmark || null,
         });
       } else {
-        // Create mode — POST
-        if (!newTarget.script) return;
-        await axios.post('/api/targets', {
-          script: newTarget.script,
-          type: newTarget.type,
-          target_price: parseFloat(newTarget.target_price),
-          category: newTarget.category || null,
-          comment: newTarget.comment || null,
-          bookmark: newTarget.bookmark || null,
-        });
+        // Create mode — POST each target row
+        if (!dialogCommon.script) return;
+        const validRows = targetRows.filter(r => r.target_price);
+        if (validRows.length === 0) return;
+        for (const row of validRows) {
+          await axios.post('/api/targets', {
+            script: dialogCommon.script,
+            type: row.type,
+            target_price: parseFloat(row.target_price),
+            category: dialogCommon.category || null,
+            comment: dialogCommon.comment || null,
+            bookmark: dialogCommon.bookmark || null,
+          });
+        }
       }
-      setAddDialogOpen(false);
-      setEditTarget(null);
-      setNewTarget({ script: '', type: 'Buy', target_price: '', category: '', comment: '', bookmark: '' });
+      resetDialog();
       loadTargets();
     } catch (e: any) {
       console.error('Failed to save target:', e);
@@ -224,6 +292,11 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
   };
 
+  const fmtNoDecimals = (n: any) => {
+    if (n == null || isNaN(n)) return '—';
+    return `₹${Math.round(Number(n)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+  };
+
   // Distance % color and progress bar component
   const DistanceCell = ({ value }: { value: number | null }) => {
     if (value == null) return <span style={{ color: '#64748b' }}>—</span>;
@@ -246,27 +319,86 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
 
   // Bookmark cell renderer
   const BookmarkCell = ({ data }: { data: any }) => {
+    const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+    const open = Boolean(anchorEl);
+
     if (!data) return null;
-    const currentColor = BOOKMARK_COLORS.find(b => b.key === data.bookmark);
+    const currentBookmark = BOOKMARK_COLORS.find(b => b.key === data.bookmark);
+
+    const handleClick = (event: React.MouseEvent<HTMLElement>) => {
+      setAnchorEl(event.currentTarget);
+    };
+
+    const handleClose = () => {
+      setAnchorEl(null);
+    };
+
+    const handleSelectColor = (colorKey: string) => {
+      const newBookmarkValue = data.bookmark === colorKey ? '' : colorKey;
+      handleUpdateTarget(data.id, 'bookmark', newBookmarkValue);
+      handleClose();
+    };
 
     return (
-      <Box sx={{ display: 'flex', gap: 0.3, alignItems: 'center' }}>
-        {BOOKMARK_COLORS.map(b => (
-          <Tooltip key={b.key} title={b.label}>
-            <IconButton
-              size="small"
+      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+        <Tooltip title={currentBookmark ? `Bookmark: ${currentBookmark.label}` : 'Set Bookmark'}>
+          <IconButton
+            size="small"
+            onClick={handleClick}
+            sx={{
+              color: currentBookmark ? currentBookmark.color : 'rgba(255,255,255,0.25)',
+              '&:hover': { color: currentBookmark ? currentBookmark.color : '#f8fafc', transform: 'scale(1.1)' }
+            }}
+          >
+            <FlagIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+        <Menu
+          anchorEl={anchorEl}
+          open={open}
+          onClose={handleClose}
+          slotProps={{
+            paper: {
+              sx: {
+                background: '#161824',
+                border: '1px solid #2a2e43',
+                borderRadius: 2
+              }
+            }
+          }}
+        >
+          {BOOKMARK_COLORS.map(b => (
+            <MenuItem
+              key={b.key}
+              onClick={() => handleSelectColor(b.key)}
               sx={{
-                p: 0.3,
-                color: data.bookmark === b.key ? b.color : 'rgba(255,255,255,0.15)',
-                transition: 'all 0.2s',
-                '&:hover': { color: b.color, transform: 'scale(1.2)' }
+                fontSize: 13,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                color: data.bookmark === b.key ? b.color : 'text.primary',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' }
               }}
-              onClick={() => handleUpdateTarget(data.id, 'bookmark', data.bookmark === b.key ? '' : b.key)}
             >
-              <FlagIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
-        ))}
+              <FlagIcon sx={{ fontSize: 16, color: b.color }} />
+              {b.label} {data.bookmark === b.key ? '(Selected)' : ''}
+            </MenuItem>
+          ))}
+          {data.bookmark && (
+            <MenuItem
+              onClick={() => handleSelectColor('')}
+              sx={{
+                fontSize: 13,
+                color: 'error.main',
+                borderTop: '1px solid #2a2e43',
+                mt: 0.5,
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' }
+              }}
+            >
+              Clear Bookmark
+            </MenuItem>
+          )}
+        </Menu>
       </Box>
     );
   };
@@ -275,16 +407,35 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     {
       field: 'date',
       headerName: 'Date',
-      flex: 1.1,
-      minWidth: 100,
+      flex: 0.77,
+      minWidth: 70,
       valueFormatter: (p: any) => p.value ? new Date(p.value).toLocaleDateString('en-IN') : '—',
       sort: 'desc' as const
     },
     {
+      headerName: 'No. of Days',
+      flex: 0.9,
+      minWidth: 90,
+      valueGetter: (params: any) => {
+        if (!params.data.date) return null;
+        const targetDate = new Date(params.data.date);
+        const today = new Date();
+        const d1 = Date.UTC(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+        const d2 = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+        const diffDays = Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
+        return diffDays >= 0 ? diffDays : 0;
+      },
+      cellRenderer: (p: any) => (
+        <span style={{ display: 'block', textAlign: 'center', width: '100%', color: '#cbd5e1' }}>
+          {p.value === null || p.value === undefined ? '—' : `${p.value}d`}
+        </span>
+      )
+    },
+    {
       field: 'script',
       headerName: 'Stock Name',
-      flex: 1.5,
-      minWidth: 140,
+      flex: 1.05,
+      minWidth: 98,
       cellRenderer: (p: any) => {
         const val = p.value && p.value.endsWith('-EQ') ? p.value.slice(0, -3) : (p.value || '');
         return (
@@ -293,6 +444,52 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             onClick={() => onViewStock(p.value)}
           >
             {val}
+          </span>
+        );
+      }
+    },
+    {
+      headerName: 'Qty',
+      flex: 0.7,
+      minWidth: 70,
+      valueGetter: (params: any) => {
+        const hld = holdingsMap[params.data.script];
+        return hld ? hld.qty : null;
+      },
+      cellRenderer: (p: any) => (
+        <span style={{ display: 'block', textAlign: 'right', width: '100%', color: '#cbd5e1' }}>
+          {p.value != null ? p.value.toLocaleString('en-IN') : '—'}
+        </span>
+      )
+    },
+    {
+      headerName: 'Current Value',
+      flex: 1,
+      minWidth: 110,
+      valueGetter: (params: any) => {
+        const hld = holdingsMap[params.data.script];
+        return hld ? hld.currentValue : null;
+      },
+      cellRenderer: (p: any) => (
+        <span style={{ display: 'block', textAlign: 'right', width: '100%', color: '#cbd5e1' }}>
+          {p.value != null ? fmt(p.value) : '—'}
+        </span>
+      )
+    },
+    {
+      headerName: 'LTP Chg %',
+      flex: 0.8,
+      minWidth: 90,
+      valueGetter: (params: any) => {
+        const hld = holdingsMap[params.data.script];
+        return hld ? hld.ltpChgPct : null;
+      },
+      cellRenderer: (p: any) => {
+        if (p.value == null) return <span style={{ color: '#64748b' }}>—</span>;
+        const color = p.value >= 0 ? '#10b981' : '#ef4444';
+        return (
+          <span style={{ color, fontWeight: 600, display: 'block', textAlign: 'right', width: '100%' }}>
+            {p.value >= 0 ? '+' : ''}{p.value.toFixed(2)}%
           </span>
         );
       }
@@ -322,8 +519,8 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     {
       field: 'target_price',
       headerName: 'Target Price',
-      flex: 1,
-      minWidth: 110,
+      flex: 0.6,
+      minWidth: 66,
       cellRenderer: (p: any) => (
         <span style={{ display: 'block', textAlign: 'right', width: '100%', fontWeight: 600 }}>
           {fmt(p.value)}
@@ -333,11 +530,11 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     {
       field: 'ltp',
       headerName: 'LTP',
-      flex: 1,
-      minWidth: 100,
+      flex: 0.6,
+      minWidth: 60,
       cellRenderer: (p: any) => (
         <span style={{ display: 'block', textAlign: 'right', width: '100%' }}>
-          {fmt(p.value)}
+          {fmtNoDecimals(p.value)}
         </span>
       )
     },
@@ -353,19 +550,35 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
       headerName: 'Category',
       flex: 1,
       minWidth: 110,
-      cellRenderer: (p: any) => p.value
-        ? <Chip label={p.value} size="small" sx={{ bgcolor: 'rgba(41,98,255,0.1)', color: '#2962ff', border: '1px solid rgba(41,98,255,0.2)', fontSize: 11 }} />
-        : <span style={{ color: '#64748b' }}>—</span>
+      cellRenderer: (p: any) => {
+        if (!p.value) return <span style={{ color: '#64748b' }}>—</span>;
+        const styles = getCategoryStyles(p.value);
+        return (
+          <Chip
+            label={p.value}
+            size="small"
+            sx={{
+              bgcolor: styles.bgcolor,
+              color: styles.color,
+              border: styles.border,
+              fontSize: 11,
+              fontWeight: 600
+            }}
+          />
+        );
+      }
     },
     {
       field: 'comment',
       headerName: 'Comments',
-      flex: 1.5,
-      minWidth: 150,
+      flex: 2.82,
+      minWidth: 285,
+      wrapText: true,
+      autoHeight: true,
       cellRenderer: (p: any) => (
-        <span style={{ color: '#cbd5e1', fontSize: 12 }}>
+        <div style={{ color: '#cbd5e1', fontSize: 12, whiteSpace: 'normal', wordBreak: 'break-word', padding: '4px 0', lineHeight: '1.4' }}>
           {p.value || '—'}
-        </span>
+        </div>
       )
     },
     {
@@ -373,21 +586,41 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
       headerName: 'Triggered',
       flex: 0.8,
       minWidth: 90,
-      cellRenderer: (p: any) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
-          {p.value ? (
-            <CheckCircleIcon sx={{ color: '#10b981', fontSize: 20 }} />
-          ) : (
-            <Box sx={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #475569' }} />
-          )}
-        </Box>
-      )
+      cellRenderer: (p: any) => {
+        const isTriggered = !!p.value;
+        const handleTriggerToggle = async (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const targetVal = isTriggered ? 0 : 1;
+          try {
+            await axios.put(`/api/targets/${p.data.id}`, { triggered: targetVal });
+            if (!targetVal) {
+              dispatch(removeNotifiedTargetId(p.data.id));
+            }
+            loadTargets();
+          } catch (err) {
+            console.error('Failed to toggle triggered status:', err);
+          }
+        };
+
+        return (
+          <Box 
+            sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', cursor: 'pointer' }}
+            onClick={handleTriggerToggle}
+          >
+            {isTriggered ? (
+              <CheckCircleIcon sx={{ color: '#10b981', fontSize: 20 }} />
+            ) : (
+              <Box sx={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #475569' }} />
+            )}
+          </Box>
+        );
+      }
     },
     {
       field: 'bookmark',
       headerName: 'Bookmark',
-      flex: 1.2,
-      minWidth: 130,
+      flex: 0.6,
+      minWidth: 65,
       cellRenderer: (p: any) => <BookmarkCell data={p.data} />
     },
     {
@@ -427,7 +660,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
         </Tooltip>
       )
     }
-  ], [categories, onViewStock, editTarget]);
+  ], [categories, onViewStock, editTarget, dispatch, loadTargets, holdingsMap]);
 
   const defaultColDef = useMemo(() => ({
     sortable: true,
@@ -466,7 +699,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             variant="contained"
             size="small"
             startIcon={<AddIcon />}
-            onClick={() => { setEditTarget(null); setNewTarget({ script: '', type: 'Buy', target_price: '', category: '', comment: '', bookmark: '' }); setAddDialogOpen(true); }}
+            onClick={() => { setEditTarget(null); setTargetRows([{ type: 'Buy', target_price: '' }]); setDialogCommon({ script: '', category: '', comment: '', bookmark: '' }); setAddDialogOpen(true); }}
             sx={{ borderRadius: 2 }}
           >
             Add Target
@@ -604,7 +837,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
       {/* Add / Edit Target Dialog */}
       <Dialog
         open={addDialogOpen}
-        onClose={() => { setAddDialogOpen(false); setEditTarget(null); setNewTarget({ script: '', type: 'Buy', target_price: '', category: '', comment: '', bookmark: '' }); }}
+        onClose={resetDialog}
         maxWidth="sm"
         fullWidth
         slotProps={{ paper: { sx: { background: '#161824', border: '1px solid #2a2e43', borderRadius: 3 } } }}
@@ -622,7 +855,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
               label="Stock Name"
               size="small"
               fullWidth
-              value={newTarget.script}
+              value={dialogCommon.script}
               disabled
               sx={{ mt: 1.5, mb: 2 }}
             />
@@ -630,9 +863,9 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             <Autocomplete
               freeSolo
               options={scripList}
-              value={newTarget.script}
-              onChange={(_, val) => setNewTarget({ ...newTarget, script: val || '' })}
-              onInputChange={(_, val) => setNewTarget({ ...newTarget, script: val || '' })}
+              value={dialogCommon.script}
+              onChange={(_, val) => setDialogCommon({ ...dialogCommon, script: val || '' })}
+              onInputChange={(_, val) => setDialogCommon({ ...dialogCommon, script: val || '' })}
               getOptionLabel={(option) => {
                 const display = typeof option === 'string' && option.endsWith('-EQ') ? option.slice(0, -3) : option;
                 return display;
@@ -653,42 +886,83 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             />
           )}
 
-          <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-            {/* Type */}
-            <FormControl size="small" sx={{ flex: 1 }}>
-              <InputLabel>Type</InputLabel>
-              <Select
-                value={newTarget.type}
-                label="Type"
-                onChange={(e) => setNewTarget({ ...newTarget, type: e.target.value })}
-              >
-                <MenuItem value="Buy">Buy</MenuItem>
-                <MenuItem value="Sell">Sell</MenuItem>
-              </Select>
-            </FormControl>
+          {/* Type / Target Price rows */}
+          {targetRows.map((row, idx) => (
+            <Box key={idx} sx={{ display: 'flex', gap: 2, mb: 1.5, alignItems: 'center' }}>
+              {/* Type */}
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel>Type</InputLabel>
+                <Select
+                  value={row.type}
+                  label="Type"
+                  onChange={(e) => {
+                    const updated = [...targetRows];
+                    updated[idx] = { ...updated[idx], type: e.target.value };
+                    setTargetRows(updated);
+                  }}
+                >
+                  <MenuItem value="Buy">Buy</MenuItem>
+                  <MenuItem value="Sell">Sell</MenuItem>
+                </Select>
+              </FormControl>
 
-            {/* Target Price */}
-            <TextField
-              label="Target Price"
-              type="number"
+              {/* Target Price */}
+              <TextField
+                label="Target Price"
+                type="number"
+                size="small"
+                value={row.target_price}
+                onChange={(e) => {
+                  const updated = [...targetRows];
+                  updated[idx] = { ...updated[idx], target_price: e.target.value };
+                  setTargetRows(updated);
+                }}
+                sx={{ flex: 1 }}
+              />
+
+              {/* Remove button (only if more than 1 row and in create mode) */}
+              {!editTarget && targetRows.length > 1 && (
+                <IconButton
+                  size="small"
+                  onClick={() => setTargetRows(targetRows.filter((_, i) => i !== idx))}
+                  sx={{ color: '#ef4444', '&:hover': { bgcolor: 'rgba(239,68,68,0.1)' } }}
+                >
+                  <DeleteIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              )}
+            </Box>
+          ))}
+
+          {/* +Add More button — only in create mode */}
+          {!editTarget && (
+            <Button
               size="small"
-              value={newTarget.target_price}
-              onChange={(e) => setNewTarget({ ...newTarget, target_price: e.target.value })}
-              sx={{ flex: 1 }}
-            />
-          </Box>
+              startIcon={<AddIcon />}
+              onClick={() => setTargetRows([...targetRows, { type: 'Buy', target_price: '' }])}
+              sx={{
+                textTransform: 'none',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#2962ff',
+                mb: 2,
+                '&:hover': { bgcolor: 'rgba(41,98,255,0.08)' },
+              }}
+            >
+              Add More
+            </Button>
+          )}
 
           {/* Category */}
           <FormControl size="small" fullWidth sx={{ mb: 2 }}>
             <InputLabel>Category</InputLabel>
             <Select
-              value={newTarget.category}
+              value={dialogCommon.category}
               label="Category"
               onChange={(e) => {
                 if (e.target.value === '__add_new__') {
                   setCategoryDialogOpen(true);
                 } else {
-                  setNewTarget({ ...newTarget, category: e.target.value });
+                  setDialogCommon({ ...dialogCommon, category: e.target.value });
                 }
               }}
             >
@@ -708,36 +982,45 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             rows={3}
             size="small"
             label="Comments"
-            value={newTarget.comment}
-            onChange={(e) => setNewTarget({ ...newTarget, comment: e.target.value })}
+            value={dialogCommon.comment}
+            onChange={(e) => setDialogCommon({ ...dialogCommon, comment: e.target.value })}
             sx={{ mb: 2 }}
           />
 
-          {/* Bookmark */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2" sx={{ fontSize: 13, mr: 1 }}>Bookmark:</Typography>
-            {BOOKMARK_COLORS.map(b => (
-              <Tooltip key={b.key} title={b.label}>
-                <IconButton
-                  size="small"
-                  onClick={() => setNewTarget({ ...newTarget, bookmark: newTarget.bookmark === b.key ? '' : b.key })}
-                  sx={{
-                    color: newTarget.bookmark === b.key ? b.color : 'rgba(255,255,255,0.2)',
-                    border: newTarget.bookmark === b.key ? `2px solid ${b.color}` : '2px solid transparent',
-                    borderRadius: 1,
-                    transition: 'all 0.2s',
-                    '&:hover': { color: b.color }
-                  }}
-                >
-                  <FlagIcon sx={{ fontSize: 20 }} />
-                </IconButton>
-              </Tooltip>
-            ))}
-          </Box>
+          {/* Bookmark Select Dropdown */}
+          <FormControl size="small" fullWidth sx={{ mb: 2 }}>
+            <InputLabel>Bookmark</InputLabel>
+            <Select
+              value={dialogCommon.bookmark}
+              label="Bookmark"
+              onChange={(e) => setDialogCommon({ ...dialogCommon, bookmark: e.target.value })}
+              renderValue={(value) => {
+                const selected = BOOKMARK_COLORS.find(b => b.key === value);
+                return selected ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FlagIcon sx={{ fontSize: 16, color: selected.color }} />
+                    {selected.label}
+                  </Box>
+                ) : 'None';
+              }}
+            >
+              <MenuItem value="">
+                <em>None</em>
+              </MenuItem>
+              {BOOKMARK_COLORS.map(b => (
+                <MenuItem key={b.key} value={b.key}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FlagIcon sx={{ fontSize: 16, color: b.color }} />
+                    {b.label}
+                  </Box>
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </DialogContent>
         <DialogActions sx={{ p: 2, pt: 0 }}>
           <Button
-            onClick={() => { setAddDialogOpen(false); setEditTarget(null); setNewTarget({ script: '', type: 'Buy', target_price: '', category: '', comment: '', bookmark: '' }); }}
+            onClick={resetDialog}
             sx={{ textTransform: 'none' }}
           >
             Cancel
@@ -745,10 +1028,14 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
           <Button
             variant="contained"
             onClick={handleAddOrSaveTarget}
-            disabled={!newTarget.target_price || (!editTarget && !newTarget.script)}
+            disabled={
+              editTarget
+                ? !targetRows[0]?.target_price
+                : (!dialogCommon.script || targetRows.every(r => !r.target_price))
+            }
             sx={{ textTransform: 'none', borderRadius: 2 }}
           >
-            {editTarget ? 'Save Changes' : 'Add Target'}
+            {editTarget ? 'Save Changes' : `Add Target${targetRows.length > 1 ? `s (${targetRows.filter(r => r.target_price).length})` : ''}`}
           </Button>
         </DialogActions>
       </Dialog>

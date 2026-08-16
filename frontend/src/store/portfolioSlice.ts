@@ -10,6 +10,7 @@ interface PortfolioState {
   auditLogs: any[];
   targets: any[];
   targetCategories: string[];
+  notifiedTargetIds: number[];
   automation: {
     [broker: string]: {
       status: string;
@@ -30,6 +31,7 @@ const initialState: PortfolioState = {
   auditLogs: [],
   targets: [],
   targetCategories: [],
+  notifiedTargetIds: [],
   automation: {
     mstock: { status: 'IDLE', error: null, otpRequired: false },
     mstock_ka: { status: 'IDLE', error: null, otpRequired: false },
@@ -68,6 +70,17 @@ const portfolioSlice = createSlice({
     setTargetCategories(state, action: PayloadAction<string[]>) {
       state.targetCategories = action.payload;
     },
+    addNotifiedTargetId(state, action: PayloadAction<number>) {
+      if (!state.notifiedTargetIds.includes(action.payload)) {
+        state.notifiedTargetIds.push(action.payload);
+      }
+    },
+    removeNotifiedTargetId(state, action: PayloadAction<number>) {
+      state.notifiedTargetIds = state.notifiedTargetIds.filter(id => id !== action.payload);
+    },
+    clearNotifiedTargetIds(state) {
+      state.notifiedTargetIds = [];
+    },
     setAutomationStatus(
       state,
       action: PayloadAction<{ broker: string; status: string; error: string | null; otpRequired: boolean }>
@@ -93,6 +106,9 @@ export const {
   setAuditLogs,
   setTargets,
   setTargetCategories,
+  addNotifiedTargetId,
+  removeNotifiedTargetId,
+  clearNotifiedTargetIds,
   setAutomationStatus,
   setLoading,
   setError,

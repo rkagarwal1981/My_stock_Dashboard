@@ -1355,18 +1355,13 @@ def get_targets(current_user: User = Depends(get_current_user), db: Session = De
             elif t.type == "Sell":
                 distance_pct = ((ltp - t.target_price) / t.target_price) * 100
 
-        # Compute triggered status
-        triggered = False
+        # Compute live triggered status
+        is_triggered_live = False
         if ltp is not None and t.target_price is not None:
             if t.type == "Buy" and ltp <= t.target_price:
-                triggered = True
+                is_triggered_live = True
             elif t.type == "Sell" and ltp >= t.target_price:
-                triggered = True
-
-        # Auto-update triggered flag in DB if state changed
-        new_triggered_val = 1 if triggered else 0
-        if t.triggered != new_triggered_val:
-            t.triggered = new_triggered_val
+                is_triggered_live = True
 
         result.append({
             "id": t.id,
@@ -1378,13 +1373,13 @@ def get_targets(current_user: User = Depends(get_current_user), db: Session = De
             "distance_pct": safe_float(distance_pct),
             "category": t.category,
             "comment": t.comment,
-            "triggered": triggered,
+            "triggered": bool(t.triggered),
+            "is_triggered_live": is_triggered_live,
             "bookmark": t.bookmark,
             "created_at": t.created_at,
             "updated_at": t.updated_at
         })
 
-    db.commit()  # persist any triggered flag updates
     return result
 
 
@@ -1660,18 +1655,19 @@ def _apply_broker_filter(query, broker: Optional[str]):
 
 
 def _apply_analytics_filters(query, model=Transaction):
-    from sqlalchemy import not_
+    from sqlalchemy import not_, or_
     return query.filter(
         not_(model.script.ilike('%PE-EQ')),
-        not_(model.script.ilike('%CE-EQ')),
+        or_(not_(model.script.ilike('%CE-EQ')), model.script.in_(['BAJFINANCE-EQ', 'RELIANCE-EQ'])),
         not_(model.script.ilike('%ETF-EQ')),
         not_(model.script.ilike('%FUT')),
         not_(model.script.ilike('%BEES-EQ')),
         not_(model.script.ilike('SGB%')),
         not_(model.script.ilike('%CALL')),
         not_(model.script.ilike('%PUT')),
-        not_(model.script.ilike('SMALCAP-EQ')),
-        not_(model.script.ilike('ICICIB22-EQ'))
+        not_(model.script.ilike('SMALLCAP-EQ')),
+        not_(model.script.ilike('ICICIB22-EQ')),
+        not_(model.script.ilike('%-A-EQ')),
     )
 
 
@@ -1942,6 +1938,359 @@ def analytics_unsettled_ageing(
     return {"bins": result, "total": len(ageing_list), "total_value": all_val}
 
 
+@router.get("/analytics/unsettled-ageing/export")
+def export_unsettled_ageing(
+    broker: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate and download an Excel report with full detail behind the
+    Unsettled Transaction Ageing chart.
+
+    Sheets:
+      1. Raw Transactions       – included transactions (after exception filters)
+      2. Excluded (Exceptions)  – transactions excluded by exception filters
+      3. Full LIFO Settlement   – complete LIFO output
+      4. All Unsettled BUYs     – unsettled BUY lots with age/bucket
+      5. Pivot – All Brokers    – Stock × Bucket pivot (Buy Value)
+      6+. Pivot – <broker>      – one pivot per broker
+      N-2. Top 20 Concentration – largest unsettled positions
+      N-1. Broker Summary       – broker-wise totals
+      N.   Bucket Summary       – bin counts & values (matches the chart)
+    """
+    from sqlalchemy import not_, or_ as sa_or
+    from openpyxl.chart import BarChart as OpxBarChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.utils import get_column_letter
+
+    BINS = [
+        ("0-7d",    0,    7),
+        ("8-15d",   8,   15),
+        ("16-30d", 16,   30),
+        ("1m",     31,   60),
+        ("2m",     61,   90),
+        ("3m",     91,  120),
+        ("4m",    121,  150),
+        ("5m",    151,  170),
+        (">6mnth", 171, 999_999),
+    ]
+
+    EXCEPTION_PATTERNS = [
+        ("%PE-EQ",       "Put Option (Equity)"),
+        ("%CE-EQ",       "Call Option (Equity)"),
+        ("%ETF-EQ",      "Exchange Traded Fund"),
+        ("%FUT",         "Futures contract"),
+        ("%BEES-EQ",     "Gold/Silver BEES ETF"),
+        ("SGB%",         "Sovereign Gold Bond"),
+        ("%CALL",        "Call Option"),
+        ("%PUT",         "Put Option"),
+        ("SMALLCAP-EQ",  "Specific exclusion (SMALLCAP)"),
+        ("ICICIB22-EQ",  "Specific exclusion (ICICIB22)"),
+        ("%-A-EQ",       "Auction stock"),
+    ]
+    WHITELIST = {"bajfinance-eq", "reliance-eq"}
+
+    def _matches_exception(script: str):
+        script_lower = (script or "").lower()
+        if script_lower in WHITELIST:
+            return None, None
+        for pat, reason in EXCEPTION_PATTERNS:
+            pat_lower = pat.lower()
+            if pat_lower.startswith("%") and pat_lower.endswith("%"):
+                if pat_lower[1:-1] in script_lower:
+                    return pat, reason
+            elif pat_lower.startswith("%"):
+                if script_lower.endswith(pat_lower[1:]):
+                    return pat, reason
+            elif pat_lower.endswith("%"):
+                if script_lower.startswith(pat_lower[:-1]):
+                    return pat, reason
+            else:
+                if script_lower == pat_lower:
+                    return pat, reason
+        return None, None
+
+    def _safe_date(d):
+        if d is None:
+            return ""
+        try:
+            return str(d.date()) if hasattr(d, "date") else str(d)
+        except Exception:
+            return str(d)
+
+    def _age_bin(age: int) -> str:
+        for label, lo, hi in BINS:
+            if lo <= age <= hi:
+                return label
+        return ">6mnth"
+
+    # ── 1. Load all transactions ────────────────────────────────────────────
+    all_txs = db.query(Transaction).order_by(
+        Transaction.transaction_date.asc(), Transaction.id.asc()
+    ).all()
+
+    if not all_txs:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame([{"Note": "No transactions found."}]).to_excel(
+                writer, sheet_name="Info", index=False)
+        output.seek(0)
+        resp = StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        resp.headers["Content-Disposition"] = "attachment; filename=Unsettled_Ageing_Report.xlsx"
+        return resp
+
+    # ── 2. Split included vs excluded ────────────────────────────────────
+    included_txs = []
+    excluded_rows = []
+    for t in all_txs:
+        pat, reason = _matches_exception(t.script)
+        if pat:
+            excluded_rows.append({
+                "ID": t.id, "Date": _safe_date(t.transaction_date), "Broker": t.broker,
+                "Script": t.script, "Buy/Sell": t.buy_sell, "Quantity": float(t.quantity),
+                "Price": float(t.price), "Net Amount": float(t.net_amount),
+                "Excluded By Rule": pat, "Reason": reason,
+            })
+        else:
+            included_txs.append(t)
+
+    # Build raw-transactions DataFrame (included only)
+    raw_data = [{
+        "ID": t.id, "Date": _safe_date(t.transaction_date), "Broker": t.broker,
+        "Script": t.script, "Buy/Sell": t.buy_sell, "Quantity": float(t.quantity),
+        "Price": float(t.price), "Charges": float(t.charges or 0.0),
+        "Net Amount": float(t.net_amount), "Exchange": t.exchange or "",
+        "Order Number": t.order_number or "",
+    } for t in included_txs]
+    df_raw = pd.DataFrame(raw_data)
+    df_excluded = pd.DataFrame(excluded_rows)
+
+    # ── 3. LIFO Settlement ──────────────────────────────────────────────
+    settlement = compute_lifo_settlement(included_txs)
+
+    settlement_data = []
+    for row in settlement:
+        rp = row.get("return_pct")
+        settlement_data.append({
+            "Script": str(row.get("scrip", "")), "Broker": str(row.get("broker", "")),
+            "Type": str(row.get("type", "")), "Buy Date": _safe_date(row.get("buy_date")),
+            "Buy Price": row.get("price"), "Quantity": row.get("qty"),
+            "Sell Date": _safe_date(row.get("sell_date")),
+            "Sell Price": row.get("average_of_price"), "Sell Qty": row.get("sum_of_qty"),
+            "Comment": row.get("comment", ""), "P&L": row.get("pnl"),
+            "Holding Days": row.get("holding_days"),
+            "Return %": round(float(rp) * 100, 2) if rp is not None else None,
+        })
+    df_settlement = pd.DataFrame(settlement_data)
+
+    # ── 4. Unsettled BUYs ───────────────────────────────────────────────
+    evaluation_date = datetime.now()
+    unsettled_data = []
+    for row in settlement:
+        if row.get("comment") == "Unsettled" and row.get("buy_date") is not None:
+            bd = row["buy_date"]
+            if isinstance(bd, str):
+                bd = datetime.fromisoformat(bd)
+            age = max((evaluation_date - bd).days, 0)
+            qty = float(row["qty"]) if row["qty"] is not None else 0.0
+            buy_price = float(row["price"]) if row["price"] is not None else 0.0
+            unsettled_data.append({
+                "Script": str(row["scrip"]), "Broker": str(row["broker"]),
+                "Buy Date": _safe_date(bd), "Quantity": qty,
+                "Buy Price": buy_price, "Buy Value": round(qty * buy_price, 2),
+                "Evaluation Date": _safe_date(evaluation_date),
+                "Age (Days)": int(age), "Age Bucket": _age_bin(age),
+            })
+    df_unsettled = pd.DataFrame(unsettled_data)
+
+    # ── 5. Build pivot table ────────────────────────────────────────────
+    bin_labels = [b[0] for b in BINS]
+
+    def _make_pivot(df):
+        if df.empty:
+            return pd.DataFrame()
+        pt = pd.pivot_table(df, values="Buy Value", index="Script",
+                            columns="Age Bucket", aggfunc="sum", fill_value=0,
+                            margins=True, margins_name="Grand Total")
+        # Reorder columns to match bin sequence
+        ordered = [c for c in bin_labels if c in pt.columns]
+        if "Grand Total" in pt.columns:
+            ordered.append("Grand Total")
+        remaining = [c for c in pt.columns if c not in ordered]
+        pt = pt[ordered + remaining]
+        pt = pt.sort_values("Grand Total", ascending=False)
+        return pt.round(2)
+
+    pivot_all = _make_pivot(df_unsettled)
+
+    # Per-broker pivots
+    brokers_in_data = sorted(df_unsettled["Broker"].unique()) if not df_unsettled.empty else []
+    broker_pivots = {}
+    for br in brokers_in_data:
+        br_df = df_unsettled[df_unsettled["Broker"] == br]
+        broker_pivots[br] = _make_pivot(br_df)
+
+    # ── 6. Top 20 concentration ─────────────────────────────────────────
+    if not df_unsettled.empty:
+        top20 = df_unsettled.groupby("Script").agg(
+            Total_Buy_Value=("Buy Value", "sum"),
+            Lots=("Buy Value", "count"),
+            Avg_Age=("Age (Days)", "mean"),
+            Max_Age=("Age (Days)", "max"),
+            Min_Age=("Age (Days)", "min"),
+        ).sort_values("Total_Buy_Value", ascending=False).head(20).round(2)
+        total_all = df_unsettled["Buy Value"].sum()
+        top20["% of Total"] = (top20["Total_Buy_Value"] / total_all * 100).round(1)
+        top20["Cumul %"] = top20["% of Total"].cumsum().round(1)
+        top20 = top20.reset_index()
+    else:
+        top20 = pd.DataFrame()
+
+    # ── 7. Broker summary ──────────────────────────────────────────────
+    if not df_unsettled.empty:
+        broker_summary = df_unsettled.groupby("Broker").agg(
+            Total_Buy_Value=("Buy Value", "sum"),
+            Lots=("Buy Value", "count"),
+            Avg_Age=("Age (Days)", "mean"),
+        ).sort_values("Total_Buy_Value", ascending=False).round(2).reset_index()
+    else:
+        broker_summary = pd.DataFrame()
+
+    # ── 8. Bucket summary ──────────────────────────────────────────────
+    total_lots = len(unsettled_data)
+    summary_rows = []
+    for label, lo, hi in BINS:
+        if not df_unsettled.empty:
+            mask = (df_unsettled["Age (Days)"] >= lo) & (df_unsettled["Age (Days)"] <= hi)
+            count = mask.sum()
+            value = round(df_unsettled.loc[mask, "Buy Value"].sum(), 2)
+        else:
+            count = 0
+            value = 0.0
+        pct = (count / total_lots * 100) if total_lots > 0 else 0.0
+        summary_rows.append({
+            "Age Bucket": label, "Min Days": lo,
+            "Max Days": hi if hi < 999_999 else "Infinity",
+            "Count (Lots)": count, "Total Buy Value": value,
+            "Percentage": round(pct, 1),
+        })
+    df_summary = pd.DataFrame(summary_rows)
+
+    # ── 9. Write Excel workbook ────────────────────────────────────────
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Sheet 1 – Raw Transactions
+        df_raw.to_excel(writer, sheet_name="1. Raw Transactions", index=False)
+
+        # Sheet 2 – Excluded
+        if not df_excluded.empty:
+            df_excluded.to_excel(writer, sheet_name="2. Excluded (Exceptions)", index=False)
+        else:
+            pd.DataFrame([{"Note": "No transactions excluded."}]).to_excel(
+                writer, sheet_name="2. Excluded (Exceptions)", index=False)
+
+        # Sheet 3 – Full LIFO Settlement
+        df_settlement.to_excel(writer, sheet_name="3. Full LIFO Settlement", index=False)
+
+        # Sheet 4 – All Unsettled BUYs
+        if not df_unsettled.empty:
+            df_unsettled.to_excel(writer, sheet_name="4. All Unsettled BUYs", index=False)
+
+        # Sheet 5 – Pivot (All Brokers)
+        if not pivot_all.empty:
+            pivot_all.to_excel(writer, sheet_name="5. Pivot - All Brokers")
+
+        # Sheets 6+ – Per-broker pivots
+        sheet_idx = 6
+        for br, pv in broker_pivots.items():
+            if not pv.empty:
+                name = f"{sheet_idx}. Pivot - {br}"[:31]  # Excel 31-char limit
+                pv.to_excel(writer, sheet_name=name)
+                sheet_idx += 1
+
+        # Top 20 concentration
+        if not top20.empty:
+            top20.to_excel(writer, sheet_name=f"{sheet_idx}. Top 20 Concentration", index=False)
+            sheet_idx += 1
+
+        # Broker summary
+        if not broker_summary.empty:
+            broker_summary.to_excel(writer, sheet_name=f"{sheet_idx}. Broker Summary", index=False)
+            sheet_idx += 1
+
+        # Bucket summary
+        df_summary.to_excel(writer, sheet_name=f"{sheet_idx}. Bucket Summary", index=False)
+        summary_sheet_name = f"{sheet_idx}. Bucket Summary"
+
+        # ── Add charts ──────────────────────────────────────────────────
+        wb = writer.book
+
+        # Chart 1: Bucket distribution bar chart on Bucket Summary sheet
+        ws_summary = wb[summary_sheet_name]
+
+        chart1 = OpxBarChart()
+        chart1.type = "col"
+        chart1.title = "Unsettled Ageing – Lot Count by Bucket"
+        chart1.y_axis.title = "Number of Lots"
+        chart1.x_axis.title = "Age Bucket"
+        chart1.style = 10
+        chart1.width = 22
+        chart1.height = 14
+
+        nrows = len(summary_rows)
+        cats = Reference(ws_summary, min_col=1, min_row=2, max_row=nrows + 1)  # bucket labels
+        vals_count = Reference(ws_summary, min_col=4, min_row=1, max_row=nrows + 1)  # Count col
+        chart1.add_data(vals_count, titles_from_data=True)
+        chart1.set_categories(cats)
+        chart1.shape = 4
+        ws_summary.add_chart(chart1, f"A{nrows + 4}")
+
+        # Chart 2: Bucket distribution by value
+        chart2 = OpxBarChart()
+        chart2.type = "col"
+        chart2.title = "Unsettled Ageing – Buy Value by Bucket (₹)"
+        chart2.y_axis.title = "Buy Value (₹)"
+        chart2.x_axis.title = "Age Bucket"
+        chart2.style = 10
+        chart2.width = 22
+        chart2.height = 14
+
+        vals_value = Reference(ws_summary, min_col=5, min_row=1, max_row=nrows + 1)  # Value col
+        chart2.add_data(vals_value, titles_from_data=True)
+        chart2.set_categories(cats)
+        chart2.shape = 4
+        ws_summary.add_chart(chart2, f"A{nrows + 20}")
+
+        # Chart 3: Top 20 concentration bar chart
+        if not top20.empty:
+            top_sheet_name = [s for s in wb.sheetnames if "Top 20" in s][0]
+            ws_top = wb[top_sheet_name]
+            n_top = len(top20)
+
+            chart3 = OpxBarChart()
+            chart3.type = "bar"  # horizontal bar
+            chart3.title = "Top 20 Stocks by Unsettled Buy Value"
+            chart3.x_axis.title = "Buy Value (₹)"
+            chart3.y_axis.title = "Stock"
+            chart3.style = 10
+            chart3.width = 24
+            chart3.height = max(14, n_top * 0.8)
+
+            top_cats = Reference(ws_top, min_col=1, min_row=2, max_row=n_top + 1)
+            top_vals = Reference(ws_top, min_col=2, min_row=1, max_row=n_top + 1)
+            chart3.add_data(top_vals, titles_from_data=True)
+            chart3.set_categories(top_cats)
+            chart3.shape = 4
+            ws_top.add_chart(chart3, f"A{n_top + 4}")
+
+    output.seek(0)
+    ts = evaluation_date.strftime("%Y%m%d_%H%M")
+    resp = StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp.headers["Content-Disposition"] = f'attachment; filename="Unsettled_Ageing_Report_{ts}.xlsx"'
+    return resp
+
+
 @router.get("/analytics/monthly-return")
 def analytics_monthly_return(
     broker: Optional[str] = None,
@@ -2033,31 +2382,34 @@ def analytics_expenses_interest(
     tax_pnl_path      = os.path.join(expense_dir, "Tax_PNL_mstock.xlsx")
     ledger_2526_path  = os.path.join(expense_dir, "MA108170_Ledger_Report (25-26).xlsx")
     tax_pnl_2526_path = os.path.join(expense_dir, "Tax_PNL_Mstock (25-26).xlsx")
+    ledger_2627_path  = os.path.join(expense_dir, "MA108170_Ledger_Report (26-27).xlsx")
+    tax_pnl_2627_path = os.path.join(expense_dir, "Tax_PNL_Mstock (26-27).xlsx")
 
     ledger_exists      = os.path.exists(ledger_path)
     tax_pnl_exists     = os.path.exists(tax_pnl_path)
     ledger_2526_exists = os.path.exists(ledger_2526_path)
     tax_pnl_2526_exists = os.path.exists(tax_pnl_2526_path)
+    ledger_2627_exists = os.path.exists(ledger_2627_path)
+    tax_pnl_2627_exists = os.path.exists(tax_pnl_2627_path)
 
     mstock_ledger     = parse_mstock_ledger(ledger_path)      if ledger_exists      else {}
     mstock_tax        = parse_mstock_tax_pnl(tax_pnl_path)    if tax_pnl_exists     else {}
     mstock_ledger_2526 = parse_mstock_ledger(ledger_2526_path) if ledger_2526_exists else {}
     mstock_tax_2526   = parse_mstock_tax_pnl(tax_pnl_2526_path) if tax_pnl_2526_exists else {}
+    mstock_ledger_2627 = parse_mstock_ledger(ledger_2627_path) if ledger_2627_exists else {}
+    mstock_tax_2627   = parse_mstock_tax_pnl(tax_pnl_2627_path) if tax_pnl_2627_exists else {}
 
     for m, entry in mstock_ledger_2526.items():
-        if m in mstock_ledger:
-            mstock_ledger[m]["mtf_interest"] = round(mstock_ledger[m]["mtf_interest"] + entry.get("mtf_interest", 0.0), 2)
-            mstock_ledger[m]["dp_charges"]   = round(mstock_ledger[m]["dp_charges"]   + entry.get("dp_charges",   0.0), 2)
-            mstock_ledger[m]["mtf_position"] = max(mstock_ledger[m]["mtf_position"], entry.get("mtf_position", 0.0))
-        else:
-            mstock_ledger[m] = dict(entry)
+        mstock_ledger[m] = dict(entry)
+
+    for m, entry in mstock_ledger_2627.items():
+        mstock_ledger[m] = dict(entry)
 
     for m, entry in mstock_tax_2526.items():
-        if m in mstock_tax:
-            mstock_tax[m]["brokerage"]    = round(mstock_tax[m]["brokerage"]    + entry.get("brokerage",    0.0), 2)
-            mstock_tax[m]["tax_other_stt"] = round(mstock_tax[m]["tax_other_stt"] + entry.get("tax_other_stt", 0.0), 2)
-        else:
-            mstock_tax[m] = dict(entry)
+        mstock_tax[m] = dict(entry)
+
+    for m, entry in mstock_tax_2627.items():
+        mstock_tax[m] = dict(entry)
 
     # ── Mstock_KA files ────────────────────────────────────────
     # Updated to read (2025-26) and (2026-27) formats from Expense folder
@@ -2267,6 +2619,265 @@ def analytics_expenses_interest(
         "mstock_ka_files_missing": not (ka_ledger_exists and ka_tax_pnl_exists),
         "mstock_ka_ledger_exists": ka_ledger_exists,
         "mstock_ka_tax_pnl_exists": ka_tax_pnl_exists,
+    }
+
+
+class InitiatePullExpensesPayload(BaseModel):
+    broker: str
+
+
+class PullExpensesPayload(BaseModel):
+    broker: str
+    otp: Optional[str] = ""
+
+
+active_pull_sessions = {}
+
+
+def parse_mstock_credentials(filepath: str) -> dict:
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Credentials file not found: {filepath}")
+    import re
+    creds = {}
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                key, val = line.split(":", 1)
+                key_norm = re.sub(r"\s+", "_", key.strip().lower())
+                creds[key_norm] = val.strip()
+                
+    mapped = {}
+    for k, v in creds.items():
+        if "username" in k:
+            mapped["username"] = v
+        elif "password" in k:
+            mapped["password"] = v
+        elif "api_key" in k:
+            mapped["api_key"] = v
+        elif "totp" in k or "2_a" in k or "2a" in k:
+            mapped["totp_key"] = v
+    return mapped
+
+
+@router.post("/analytics/pull-expenses/initiate")
+def initiate_pull_expenses(
+    payload: InitiatePullExpensesPayload,
+    current_user: User = Depends(get_current_user)
+):
+    import os
+    from playwright.sync_api import sync_playwright
+    
+    broker = payload.broker.lower()
+    if broker not in ("mstock", "mstock_ka"):
+        raise HTTPException(status_code=400, detail="Invalid broker. Supported: mstock, mstock_ka")
+        
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    expense_dir = os.path.join(root_dir, "Expense")
+    os.makedirs(expense_dir, exist_ok=True)
+    
+    is_ka = (broker == "mstock_ka")
+    
+    # 1. Resolve Credentials
+    if is_ka:
+        creds_file = os.path.join(root_dir, "mstock_credentials_KA.txt")
+        mobile_no = "9910302667"
+        ledger_filename = "MA135204_Ledger_Report (2026-27).xlsx"
+        tax_pnl_filename = "Tax_PNL Mstock_KA (2026-27).xlsx"
+    else:
+        creds_file = os.path.join(root_dir, "mstock_credentials.txt")
+        mobile_no = "9910100289"
+        ledger_filename = "MA108170_Ledger_Report (26-27).xlsx"
+        tax_pnl_filename = "Tax_PNL_Mstock (26-27).xlsx"
+        
+    try:
+        creds = parse_mstock_credentials(creds_file)
+        password = creds.get("password")
+        if not password:
+            raise ValueError("Password not found in credentials file.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read credentials: {str(e)}")
+        
+    # Clean up any existing active session for this broker
+    if broker in active_pull_sessions:
+        try:
+            sess = active_pull_sessions[broker]
+            sess["page"].close()
+            sess["context"].close()
+            sess["browser"].close()
+            sess["playwright"].stop()
+        except Exception:
+            pass
+        del active_pull_sessions[broker]
+        
+    p = sync_playwright().start()
+    try:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720}
+        )
+        page = context.new_page()
+        
+        # Go to login
+        page.goto("https://trade.mstock.com/#/login")
+        page.get_by_role("button", name="Login with Credentials").click()
+        page.get_by_role("textbox", name="Enter Mobile Number / Client").fill(mobile_no)
+        page.get_by_role("textbox", name="Enter Mobile Number / Client").press("Tab")
+        page.get_by_role("textbox", name="Enter Password").fill(password)
+        page.get_by_role("button", name="Login").click()
+        
+        # Wait for OTP input boxes to render (triggers OTP SMS/email)
+        page.wait_for_selector("input", timeout=20000)
+        
+        active_pull_sessions[broker] = {
+            "playwright": p,
+            "browser": browser,
+            "context": context,
+            "page": page,
+            "ledger_filename": ledger_filename,
+            "tax_pnl_filename": tax_pnl_filename,
+            "expense_dir": expense_dir
+        }
+        
+        return {
+            "status": "otp_required",
+            "message": "OTP has been triggered on your registered mobile/email. Please enter it to proceed."
+        }
+        
+    except Exception as e:
+        try:
+            page.close()
+            context.close()
+            browser.close()
+        except Exception:
+            pass
+        try:
+            p.stop()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to initiate login and trigger OTP: {str(e)}")
+
+
+@router.post("/analytics/pull-expenses")
+def pull_expenses(
+    payload: PullExpensesPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    import os
+    
+    broker = payload.broker.lower()
+    otp = payload.otp.strip() if payload.otp else ""
+    
+    if broker not in active_pull_sessions:
+        raise HTTPException(status_code=400, detail="No active session found for this broker. Please initiate login first.")
+        
+    if not otp or len(otp) != 6 or not otp.isdigit():
+        raise HTTPException(status_code=400, detail="OTP must be a 6-digit number")
+        
+    session = active_pull_sessions[broker]
+    page = session["page"]
+    context = session["context"]
+    browser = session["browser"]
+    playwright_inst = session["playwright"]
+    ledger_filename = session["ledger_filename"]
+    tax_pnl_filename = session["tax_pnl_filename"]
+    expense_dir = session["expense_dir"]
+    
+    try:
+        # Fill OTP
+        for idx, digit in enumerate(otp):
+            page.get_by_role("textbox").nth(idx).fill(digit)
+            
+        # Wait for dashboard to load (Hamburger Menu is a good indicator)
+        page.wait_for_selector('button[name="Hamburger Menu"]', timeout=30000)
+        
+        # Click hamburger menu and go to Ledger
+        page.get_by_role("button", name="Hamburger Menu").click()
+        page.locator("a").filter(has_text="Ledger").click()
+        page.get_by_role("tab", name="Current F.Y.").click()
+        page.get_by_role("button", name="Download").click()
+        
+        # Download Ledger
+        with page.expect_download(timeout=30000) as download_info:
+            page.get_by_role("button", name="EXCEL").click()
+        download = download_info.value
+        ledger_path = os.path.join(expense_dir, ledger_filename)
+        download.save_as(ledger_path)
+        
+        # Close Ledger dialog
+        page.get_by_role("button", name="Close").first.click()
+        
+        # Go to P/L Report -> Tax P/L
+        page.get_by_role("tab", name="P/L Report").click()
+        page.get_by_role("tab", name="Tax P/L").click()
+        page.locator(".mat-mdc-select-arrow-wrapper").first.click()
+        
+        page.wait_for_selector("mat-option", timeout=5000)
+        try:
+            page.locator("mat-option").filter(has_text="-2027").click()
+        except Exception:
+            page.locator("#mat-option-1").get_by_text("-2027").click()
+            
+        page.get_by_role("button", name="Submit").click()
+        page.get_by_role("button", name="Download").click()
+        
+        # Download Tax P&L
+        with page.expect_download(timeout=30000) as download1_info:
+            page.get_by_role("button", name="EXCELExcel format").click()
+        download1 = download1_info.value
+        tax_pnl_path = os.path.join(expense_dir, tax_pnl_filename)
+        download1.save_as(tax_pnl_path)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Playwright execution failed: {str(e)}")
+    finally:
+        # Clean up session
+        try:
+            page.close()
+            context.close()
+            browser.close()
+        except Exception:
+            pass
+        try:
+            playwright_inst.stop()
+        except Exception:
+            pass
+        del active_pull_sessions[broker]
+        
+    # 3. Auto-run code behind "Scan Local Import"
+    scan_result = None
+    try:
+        creds = db.query(BrokerCredentials).filter_by(user_id=current_user.id).all()
+        for c in creds:
+            bname = c.broker_name.upper()
+            os.environ[f"{bname}_USERNAME"] = decrypt_value(c.encrypted_username) or ""
+            os.environ[f"{bname}_PASSWORD"] = decrypt_value(c.encrypted_password) or ""
+            if c.encrypted_pin:
+                os.environ[f"{bname}_PIN"] = decrypt_value(c.encrypted_pin) or ""
+            if c.encrypted_totp_key:
+                os.environ[f"{bname}_TOTP_KEY"] = decrypt_value(c.encrypted_totp_key) or ""
+            if c.encrypted_api_key:
+                os.environ[f"{bname}_API_KEY"] = decrypt_value(c.encrypted_api_key) or ""
+            if c.encrypted_api_secret:
+                os.environ[f"{bname}_API_SECRET"] = decrypt_value(c.encrypted_api_secret) or ""
+                
+        try:
+            run_trade_pullers()
+        except Exception as ep:
+            print("Error running trade pullers during auto-scan:", ep)
+            
+        scan_result = scan_and_import_directory(db)
+    except Exception as es:
+        print("Error running auto-scan:", es)
+        
+    return {
+        "status": "success",
+        "message": f"Successfully pulled expenses for {broker.upper()}.",
+        "scan_result": scan_result
     }
 
 

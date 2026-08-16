@@ -45,18 +45,19 @@ def main():
     try:
         # 1. Fetch all transactions from database (ignoring SGB, FUT, PE, CE, ETF)
         print("Fetching transactions...")
-        from sqlalchemy import not_
+        from sqlalchemy import not_, or_
         txs = db.query(Transaction).filter(
             not_(Transaction.script.ilike('%PE-EQ')),
-            not_(Transaction.script.ilike('%CE-EQ')),
+            or_(not_(Transaction.script.ilike('%CE-EQ')), Transaction.script.in_(['BAJFINANCE-EQ', 'RELIANCE-EQ'])),
             not_(Transaction.script.ilike('%ETF-EQ')),
             not_(Transaction.script.ilike('%FUT')),
             not_(Transaction.script.ilike('%BEES-EQ')),
             not_(Transaction.script.ilike('SGB%')),
             not_(Transaction.script.ilike('%CALL')),
             not_(Transaction.script.ilike('%PUT')),
-            not_(Transaction.script.ilike('SMALCAP-EQ')),
-            not_(Transaction.script.ilike('ICICIB22-EQ'))
+            not_(Transaction.script.ilike('SMALLCAP-EQ')),
+            not_(Transaction.script.ilike('ICICIB22-EQ')),
+            not_(Transaction.script.ilike('%-A-EQ')),
         ).order_by(
             Transaction.transaction_date.asc(), Transaction.id.asc()
         ).all()

@@ -4,9 +4,11 @@ import {
   Box, Typography, Card, CardContent, FormControl, InputLabel, Select,
   MenuItem, CircularProgress, Chip, TextField, Tooltip as MuiTooltip,
   Checkbox, Collapse, IconButton, Divider, RadioGroup, FormControlLabel, Radio,
+  Button,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import DownloadIcon from '@mui/icons-material/Download';
 import AnalyticsIcon from '@mui/icons-material/Analytics';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import {
@@ -301,6 +303,8 @@ const Analytics: React.FC = () => {
   const [ageingLoading, setAgeingLoading] = useState(true);
   const [ageingMode, setAgeingMode]       = useState<'volume' | 'value'>('volume');
 
+  // ── Unsettled Txns Report download state ───────────────────────────────────
+  const [exportingReport, setExportingReport] = useState(false);
 
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
@@ -374,6 +378,33 @@ const Analytics: React.FC = () => {
       setAgeingData(res.data);
     } catch { setAgeingData({ bins: [], total: 0, total_value: 0 }); } finally { setAgeingLoading(false); }
   }, [brokerParam, monthTo]);
+
+  // ── Download handler for Unsettled Txns Report ────────────────────────────
+  const handleDownloadUnsettledReport = async () => {
+    try {
+      setExportingReport(true);
+      const params: any = {};
+      if (brokerParam) params.broker = brokerParam;
+      const response = await axios.get('/api/analytics/unsettled-ageing/export', {
+        params,
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const now = new Date();
+      const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+      link.setAttribute('download', `Unsettled_Ageing_Report_${ts}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+    } finally {
+      setExportingReport(false);
+    }
+  };
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -564,6 +595,26 @@ const Analytics: React.FC = () => {
               {BROKERS.map(b => <MenuItem key={b} value={b}>{b}</MenuItem>)}
             </Select>
           </FormControl>
+
+          {/* Unsettled Txns Report Download */}
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={exportingReport ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
+            onClick={handleDownloadUnsettledReport}
+            disabled={exportingReport}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              fontSize: 12,
+              borderColor: '#8b5cf6',
+              color: '#c4b5fd',
+              '&:hover': { borderColor: '#a78bfa', background: 'rgba(139,92,246,0.1)' },
+            }}
+          >
+            {exportingReport ? 'Generating...' : 'Unsettled Txns Rpt'}
+          </Button>
         </Box>
       </Box>
 

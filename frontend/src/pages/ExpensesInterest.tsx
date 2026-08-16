@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, CircularProgress, Chip,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper,
-  FormControl, Select, MenuItem, InputLabel, Alert, Grid, Collapse, Button
+  FormControl, Select, MenuItem, InputLabel, Alert, Grid, Collapse, Button,
+  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField, Snackbar
 } from '@mui/material';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
@@ -41,23 +42,93 @@ const ExpensesInterest: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await axios.get('/api/analytics/expenses-interest', {
-          params: { broker }
-        });
-        setData(res.data);
-      } catch (err: any) {
-        setError(err.response?.data?.detail || 'Failed to fetch expenses and interest analytics.');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
+  // Pull automation states
+  const [otpDialogOpen, setOtpDialogOpen] = useState(false);
+  const [selectedBrokerForPull, setSelectedBrokerForPull] = useState<'mstock' | 'mstock_ka' | null>(null);
+  const [otpValue, setOtpValue] = useState('');
+  const [pullLoading, setPullLoading] = useState(false);
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
+    open: false,
+    message: '',
+    severity: 'success'
+  });
+
+  const fetchData = useCallback(async (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
+    setError(null);
+    try {
+      const res = await axios.get('/api/analytics/expenses-interest', {
+        params: { broker }
+      });
+      setData(res.data);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to fetch expenses and interest analytics.');
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
   }, [broker]);
+
+  useEffect(() => {
+    fetchData(true);
+  }, [fetchData]);
+
+  const handlePullClick = async (brokerType: 'mstock' | 'mstock_ka') => {
+    try {
+      setPullLoading(true);
+      setSnackbar({
+        open: true,
+        message: `Triggering OTP for ${brokerType === 'mstock' ? 'MStock' : 'MStock_KA'}... Please wait.`,
+        severity: 'info'
+      });
+      
+      const res = await axios.post('/api/analytics/pull-expenses/initiate', {
+        broker: brokerType
+      });
+      
+      setSnackbar({
+        open: true,
+        message: res.data.message || 'OTP triggered! Please enter the code below.',
+        severity: 'success'
+      });
+      setSelectedBrokerForPull(brokerType);
+      setOtpValue('');
+      setOtpDialogOpen(true);
+    } catch (err: any) {
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.detail || `Failed to trigger OTP for ${brokerType.toUpperCase()}.`,
+        severity: 'error'
+      });
+    } finally {
+      setPullLoading(false);
+    }
+  };
+
+  const handleSubmitOtp = async () => {
+    if (!selectedBrokerForPull || otpValue.length !== 6) return;
+    try {
+      setPullLoading(true);
+      const res = await axios.post('/api/analytics/pull-expenses', {
+        broker: selectedBrokerForPull,
+        otp: otpValue
+      });
+      setSnackbar({
+        open: true,
+        message: res.data.message || `Successfully pulled ${selectedBrokerForPull.toUpperCase()} expenses!`,
+        severity: 'success'
+      });
+      setOtpDialogOpen(false);
+      fetchData(false); // Reload page data without full loading spinner
+    } catch (err: any) {
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.detail || `Failed to pull ${selectedBrokerForPull.toUpperCase()} expenses.`,
+        severity: 'error'
+      });
+    } finally {
+      setPullLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -109,26 +180,60 @@ const ExpensesInterest: React.FC = () => {
           </Typography>
         </Box>
         
-        <FormControl size="small" sx={{ minWidth: 200 }}>
-          <InputLabel id="broker-select-label">Select Broker</InputLabel>
-          <Select
-            labelId="broker-select-label"
-            value={broker}
-            label="Select Broker"
-            onChange={(e) => setBroker(e.target.value)}
-            sx={{
-              bgcolor: 'rgba(22,24,36,0.85)',
-              border: '1px solid #2a2e43',
-              '& .MuiOutlinedInput-notchedOutline': { border: 'none' }
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            onClick={() => handlePullClick('mstock')}
+            disabled={loading || pullLoading}
+            sx={{ 
+              fontWeight: 600, 
+              textTransform: 'none',
+              bgcolor: '#2563eb',
+              '&:hover': { bgcolor: '#1d4ed8' }
             }}
           >
-            <MenuItem value="All">All Brokers</MenuItem>
-            <MenuItem value="MStock">MStock</MenuItem>
-            <MenuItem value="Mstock_KA">Mstock_KA</MenuItem>
-            <MenuItem value="Zerodha">Zerodha</MenuItem>
-            <MenuItem value="Dhan">Dhan</MenuItem>
-          </Select>
-        </FormControl>
+            Pull Mstock exp
+          </Button>
+
+          <Button
+            variant="contained"
+            color="secondary"
+            size="small"
+            onClick={() => handlePullClick('mstock_ka')}
+            disabled={loading || pullLoading}
+            sx={{ 
+              fontWeight: 600, 
+              textTransform: 'none',
+              bgcolor: '#7c3aed',
+              '&:hover': { bgcolor: '#6d28d9' }
+            }}
+          >
+            Pull Mstock_KA exp.
+          </Button>
+
+          <FormControl size="small" sx={{ minWidth: 160 }}>
+            <InputLabel id="broker-select-label">Select Broker</InputLabel>
+            <Select
+              labelId="broker-select-label"
+              value={broker}
+              label="Select Broker"
+              onChange={(e) => setBroker(e.target.value)}
+              sx={{
+                bgcolor: 'rgba(22,24,36,0.85)',
+                border: '1px solid #2a2e43',
+                '& .MuiOutlinedInput-notchedOutline': { border: 'none' }
+              }}
+            >
+              <MenuItem value="All">All Brokers</MenuItem>
+              <MenuItem value="MStock">MStock</MenuItem>
+              <MenuItem value="Mstock_KA">Mstock_KA</MenuItem>
+              <MenuItem value="Zerodha">Zerodha</MenuItem>
+              <MenuItem value="Dhan">Dhan</MenuItem>
+            </Select>
+          </FormControl>
+        </Box>
       </Box>
 
       {/* MStock files missing alert */}
@@ -237,7 +342,7 @@ const ExpensesInterest: React.FC = () => {
       {/* KPI Cards Row */}
       <Grid container spacing={2}>
         
-        <Grid item xs={12} sm={6} md={2.4}>
+        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
           <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2a2e43', borderRadius: 3 }}>
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -256,7 +361,7 @@ const ExpensesInterest: React.FC = () => {
           </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={2.4}>
+        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
           <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2a2e43', borderRadius: 3 }}>
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -275,7 +380,7 @@ const ExpensesInterest: React.FC = () => {
           </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={2.4}>
+        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
           <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2a2e43', borderRadius: 3 }}>
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -294,7 +399,7 @@ const ExpensesInterest: React.FC = () => {
           </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={2.4}>
+        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
           <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2a2e43', borderRadius: 3 }}>
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -313,7 +418,7 @@ const ExpensesInterest: React.FC = () => {
           </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={2.4}>
+        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
           <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2962ff', borderRadius: 3 }}>
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -580,6 +685,103 @@ const ExpensesInterest: React.FC = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* OTP Input Dialog */}
+      <Dialog 
+        open={otpDialogOpen} 
+        onClose={() => !pullLoading && setOtpDialogOpen(false)}
+        slotProps={{
+          paper: {
+            sx: {
+              bgcolor: '#161824',
+              border: '1px solid #2a2e43',
+              borderRadius: 3,
+              p: 1,
+              minWidth: 320
+            }
+          }
+        }}
+      >
+        <DialogTitle sx={{ color: '#f8fafc', fontWeight: 700 }}>
+          Enter OTP for {selectedBrokerForPull === 'mstock' ? 'MStock' : 'MStock_KA'}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ color: 'text.secondary', mb: 2 }}>
+            Please enter the 6-digit OTP/TOTP code sent to your registered mobile number/device.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="6-Digit OTP"
+            type="text"
+            fullWidth
+            variant="outlined"
+            value={otpValue}
+            onChange={(e) => {
+              const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+              setOtpValue(val);
+            }}
+            disabled={pullLoading}
+            slotProps={{
+              input: {
+                style: { textAlign: 'center', letterSpacing: '0.5em', fontSize: '1.2rem' }
+              }
+            }}
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                color: '#f8fafc',
+                '& fieldset': { borderColor: '#2a2e43' },
+                '&:hover fieldset': { borderColor: '#3b82f6' },
+                '&.Mui-focused fieldset': { borderColor: '#3b82f6' }
+              },
+              '& .MuiInputLabel-root': { color: 'text.secondary' }
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={() => setOtpDialogOpen(false)} 
+            disabled={pullLoading}
+            sx={{ color: 'text.secondary', textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSubmitOtp} 
+            disabled={pullLoading || otpValue.length !== 6}
+            variant="contained"
+            color="primary"
+            sx={{ textTransform: 'none' }}
+            startIcon={pullLoading && <CircularProgress size={16} color="inherit" />}
+          >
+            {pullLoading ? 'Pulling...' : 'Submit'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Snackbar Notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity} 
+          sx={{ 
+            width: '100%',
+            bgcolor: snackbar.severity === 'success' ? '#065f46' : '#991b1b',
+            color: '#f8fafc',
+            border: '1px solid',
+            borderColor: snackbar.severity === 'success' ? '#047857' : '#b91c1c',
+            '& .MuiAlert-icon': { color: '#f8fafc' },
+            '& .MuiAlert-action svg': { color: '#f8fafc' }
+          }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
 
     </Box>
   );
