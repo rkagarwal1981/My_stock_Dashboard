@@ -81,6 +81,7 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState('');
   const [toast, setToast] = useState({ open: false, message: '', severity: 'success' as 'success' | 'error' });
+  const [testing, setTesting] = useState('');
 
   // Load existing credentials on mount
   useEffect(() => {
@@ -129,6 +130,44 @@ const Settings: React.FC = () => {
         [field]: value
       }
     }));
+  };
+
+  const handleTestConnection = async (brokerConfig: BrokerConfig) => {
+    const bKey = brokerConfig.key;
+    const c = creds[bKey];
+    
+    // Validate fields for testing
+    for (const f of brokerConfig.fields) {
+      if (f.required && !c[f.key]) {
+        setToast({ open: true, message: `${f.label} is required to test the connection.`, severity: 'error' });
+        return;
+      }
+    }
+
+    setTesting(bKey);
+    try {
+      const res = await axios.post('/api/credentials/test', {
+        broker_name: bKey,
+        username: c.username,
+        password: c.password,
+        totp_key: c.totp_key || null,
+        api_key: c.api_key || null,
+        pin: null,
+        api_secret: null
+      });
+      
+      const { status, message } = res.data;
+      if (status === 'SUCCESS') {
+        setToast({ open: true, message: message, severity: 'success' });
+      } else {
+        setToast({ open: true, message: message, severity: 'error' });
+      }
+    } catch (err: any) {
+      const errMsg = err.response?.data?.detail || 'Failed to verify connection.';
+      setToast({ open: true, message: errMsg, severity: 'error' });
+    } finally {
+      setTesting('');
+    }
   };
 
   const handleSave = async (brokerConfig: BrokerConfig) => {
@@ -227,13 +266,31 @@ const Settings: React.FC = () => {
                   })}
                 </Box>
 
+                {['mstock', 'mstock_ka'].includes(b.key) && (
+                  <Button
+                    fullWidth
+                    variant="outlined"
+                    onClick={() => handleTestConnection(b)}
+                    disabled={saving === b.key || testing === b.key}
+                    sx={{
+                      mb: 1.5,
+                      mt: 'auto',
+                      color: b.color,
+                      borderColor: b.color,
+                      '&:hover': { borderColor: b.color, bgcolor: `${b.color}11` }
+                    }}
+                  >
+                    {testing === b.key ? <CircularProgress size={18} color="inherit" /> : `Test ${b.label} Connection`}
+                  </Button>
+                )}
+
                 <Button
                   fullWidth
                   variant="contained"
                   startIcon={saving === b.key ? <CircularProgress size={18} color="inherit" /> : <SaveIcon />}
                   onClick={() => handleSave(b)}
-                  disabled={saving === b.key}
-                  sx={{ mt: 'auto', bgcolor: b.color, '&:hover': { bgcolor: b.color, opacity: 0.85 } }}
+                  disabled={saving === b.key || testing === b.key}
+                  sx={{ mt: !['mstock', 'mstock_ka'].includes(b.key) ? 'auto' : 0, bgcolor: b.color, '&:hover': { bgcolor: b.color, opacity: 0.85 } }}
                 >
                   Save {b.label}
                 </Button>

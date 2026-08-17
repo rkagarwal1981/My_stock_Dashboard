@@ -162,6 +162,147 @@ def get_credentials(current_user: User = Depends(get_current_user), db: Session 
         } for c in creds
     ]
 
+@router.post("/credentials/test")
+def test_broker_credentials(req: CredentialsRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    broker = req.broker_name.lower()
+    if broker not in ["mstock", "mstock_ka"]:
+        raise HTTPException(status_code=400, detail="Only MStock and Mstock KA credentials testing is supported currently.")
+        
+    username = req.username
+    password = req.password
+    totp_key = req.totp_key
+    api_key = req.api_key
+    
+    # Resolve masked fields from DB if needed
+    existing = db.query(BrokerCredentials).filter_by(user_id=current_user.id, broker_name=broker).first()
+    
+    if username == "********" or not username:
+        if existing and existing.encrypted_username:
+            username = decrypt_value(existing.encrypted_username)
+        else:
+            raise HTTPException(status_code=400, detail="Username is required.")
+            
+    if password == "********" or not password:
+        if existing and existing.encrypted_password:
+            password = decrypt_value(existing.encrypted_password)
+        else:
+            raise HTTPException(status_code=400, detail="Password is required.")
+            
+    if api_key == "********" or not api_key:
+        if existing and existing.encrypted_api_key:
+            api_key = decrypt_value(existing.encrypted_api_key)
+        else:
+            raise HTTPException(status_code=400, detail="API Key is required.")
+            
+    if totp_key == "********" or not totp_key:
+        if existing and existing.encrypted_totp_key:
+            totp_key = decrypt_value(existing.encrypted_totp_key)
+        else:
+            raise HTTPException(status_code=400, detail="TOTP Secret Key is required.")
+            
+    if not all([username, password, api_key, totp_key]):
+        raise HTTPException(status_code=400, detail="All credential fields (Username, Password, API Key, TOTP Secret Key) are required to test connection.")
+        
+    try:
+        import pyotp
+        from tradingapi_a.mconnect import MConnect
+        import tradingapi_a.exceptions as m_exceptions
+        
+        mconnect = MConnect(timeout=15)
+        
+        # 1. Login with username/password
+        try:
+            mconnect.login(username, password)
+        except m_exceptions.MiraeException as e_login:
+            msg = str(e_login)
+            if "blocked" in msg.lower():
+                return {
+                    "status": "BLOCKED_ERROR",
+                    "message": "Verification FAILED: Your account has been temporarily blocked due to multiple incorrect OTP attempts. Please wait 1 minute and try again."
+                }
+            elif "credentials" in msg.lower() or "invalid" in msg.lower() or "password" in msg.lower():
+                return {
+                    "status": "CREDENTIALS_ERROR",
+                    "message": "Verification FAILED: Invalid Username or Password."
+                }
+            return {
+                "status": "LOGIN_ERROR",
+                "message": f"Verification FAILED (Login Error): {msg}"
+            }
+            
+        # 2. Verify TOTP / Generate Session
+        try:
+            totp_code = pyotp.TOTP(totp_key.strip()).now()
+        except Exception as e_totp_gen:
+            return {
+                "status": "TOTP_ERROR",
+                "message": f"Verification FAILED: Invalid TOTP Secret Key format. Please ensure it is a valid base32 key. ({str(e_totp_gen)})"
+            }
+        try:
+            mconnect.verify_totp(api_key, totp_code)
+        except m_exceptions.MiraeException as e_totp:
+            msg = str(e_totp)
+            if "expired" in msg.lower() or "otp" in msg.lower():
+                return {
+                    "status": "TOTP_ERROR",
+                    "message": "Verification FAILED: Invalid or expired TOTP code. Verify that the TOTP Secret Key is correct."
+                }
+            elif "api key" in msg.lower():
+                return {
+                    "status": "API_KEY_ERROR",
+                    "message": "Verification FAILED: Invalid API Key."
+                }
+            return {
+                "status": "TOTP_VERIFY_ERROR",
+                "message": f"Verification FAILED (TOTP Verify): {msg}"
+            }
+        except m_exceptions.APIKeyException as e_ip:
+            msg = str(e_ip)
+            if "address" in msg.lower() or "ip" in msg.lower():
+                return {
+                    "status": "IP_ERROR",
+                    "message": "API & TOTP Verified but IP Restricted: The public IP of this system is not matching the primary/secondary IP registered on your mStock Developer portal."
+                }
+            return {
+                "status": "API_KEY_ERROR",
+                "message": f"Verification FAILED (API Key Error): {msg}"
+            }
+        except Exception as e_verify:
+            msg = str(e_verify)
+            if "ip address" in msg.lower() or "matching" in msg.lower():
+                return {
+                    "status": "IP_ERROR",
+                    "message": "API & TOTP Verified but IP Restricted: The public IP of this system is not matching the primary/secondary IP registered on your mStock Developer portal."
+                }
+            return {
+                "status": "VERIFY_ERROR",
+                "message": f"Verification FAILED during 2FA session handshake: {msg}"
+            }
+            
+        # Try a quick test API call to ensure full access
+        try:
+            from datetime import datetime
+            today = datetime.now().strftime("%Y-%m-%d")
+            mconnect.get_trade_history(today, today)
+        except m_exceptions.APIKeyException as e_ip:
+            return {
+                "status": "IP_ERROR",
+                "message": "API & TOTP Verified but IP Restricted: The public IP of this system is not matching the primary/secondary IP registered on your mStock Developer portal."
+            }
+        except Exception:
+            pass
+            
+        return {
+            "status": "SUCCESS",
+            "message": "API & TOTP verification SUCCESSFUL! Connection works perfectly."
+        }
+        
+    except Exception as e:
+        return {
+            "status": "UNKNOWN_ERROR",
+            "message": f"Unexpected error during connection test: {str(e)}"
+        }
+
 # --- Transaction Endpoints ---
 
 @router.get("/transactions")
