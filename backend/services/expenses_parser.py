@@ -411,3 +411,125 @@ def parse_zerodha_interest_statement(file_path: str) -> Dict[str, float]:
         result[m] = round(float(latest_row['Funded amount']), 2)
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# Dividend Parser
+# ─────────────────────────────────────────────────────────────
+
+def parse_dividend_files(dividend_dir: str) -> Dict[str, Dict[str, float]]:
+    """
+    Parse all dividend statement CSV/Excel files in dividend_dir for all brokers.
+    Returns: {
+        'mstock': { 'YYYY-MM': float, ... },
+        'mstock_ka': { 'YYYY-MM': float, ... },
+        'zerodha': { 'YYYY-MM': float, ... },
+        'dhan': { 'YYYY-MM': float, ... },
+        ...
+    }
+    """
+    result: Dict[str, Dict[str, float]] = {
+        'mstock': {},
+        'mstock_ka': {},
+        'zerodha': {},
+        'dhan': {}
+    }
+
+    if not os.path.exists(dividend_dir):
+        return result
+
+    for fname in os.listdir(dividend_dir):
+        fpath = os.path.join(dividend_dir, fname)
+        if os.path.isdir(fpath):
+            continue
+
+        fname_lower = fname.lower()
+        if 'ma108170' in fname_lower:
+            broker_key = 'mstock'
+        elif 'ma135204' in fname_lower:
+            broker_key = 'mstock_ka'
+        elif 'rim544' in fname_lower or 'zerodha' in fname_lower:
+            broker_key = 'zerodha'
+        elif 'dhan' in fname_lower:
+            broker_key = 'dhan'
+        else:
+            broker_key = 'other'
+
+        if broker_key not in result:
+            result[broker_key] = {}
+
+        try:
+            if fname_lower.endswith('.csv'):
+                df = pd.read_csv(fpath)
+                df.columns = [str(c).strip() for c in df.columns]
+                
+                date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+                amt_col = next((c for c in df.columns if 'total' in c.lower()), None)
+                if not amt_col:
+                    amt_col = next((c for c in df.columns if 'dividend' in c.lower() and 'per' not in c.lower()), None)
+                
+                if not date_col or not amt_col:
+                    continue
+
+                for _, row in df.iterrows():
+                    d_val = str(row[date_col]).strip()
+                    amt = pd.to_numeric(row[amt_col], errors='coerce')
+                    if pd.isna(amt) or amt <= 0:
+                        continue
+                    
+                    month_key = None
+                    if len(d_val) >= 10:
+                        if d_val[4] == '-' and d_val[7] == '-':
+                            month_key = d_val[:7]
+                        else:
+                            parts = d_val.split('-')
+                            if len(parts) == 3 and len(parts[2]) == 4:
+                                month_key = f"{parts[2]}-{parts[1].zfill(2)}"
+                    
+                    if month_key:
+                        result[broker_key][month_key] = round(result[broker_key].get(month_key, 0.0) + float(amt), 2)
+
+            elif '.xlsx' in fname_lower:
+                df = pd.read_excel(fpath, sheet_name=0)
+                header_idx = None
+                for idx, row in df.iterrows():
+                    row_vals = [str(v) for v in row.values]
+                    if any('ex-date' in v.lower() for v in row_vals):
+                        header_idx = idx
+                        break
+
+                if header_idx is None:
+                    continue
+
+                df.columns = [str(c).strip() for c in df.iloc[header_idx]]
+                df = df.iloc[header_idx + 1:].copy()
+
+                date_col = next((c for c in df.columns if 'ex-date' in c.lower()), None)
+                amt_col = next((c for c in df.columns if 'total' in c.lower() and 'earned' not in str(c).lower()), None)
+
+                if not date_col or not amt_col:
+                    continue
+
+                for _, row in df.iterrows():
+                    d_val = str(row[date_col]).strip()
+                    amt = pd.to_numeric(row[amt_col], errors='coerce')
+                    if pd.isna(amt) or amt <= 0:
+                        continue
+
+                    month_key = None
+                    if len(d_val) >= 10:
+                        if d_val[4] == '-' and d_val[7] == '-':
+                            month_key = d_val[:7]
+                        else:
+                            parts = d_val.split('-')
+                            if len(parts) == 3 and len(parts[2]) == 4:
+                                month_key = f"{parts[2]}-{parts[1].zfill(2)}"
+
+                    if month_key:
+                        result[broker_key][month_key] = round(result[broker_key].get(month_key, 0.0) + float(amt), 2)
+
+        except Exception:
+            pass
+
+    return result
+

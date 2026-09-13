@@ -2511,11 +2511,15 @@ def analytics_expenses_interest(
     from services.expenses_parser import (
         parse_mstock_ledger, parse_mstock_tax_pnl,
         parse_zerodha_other_debits, parse_zerodha_tradewise,
-        parse_zerodha_interest_statement,
+        parse_zerodha_interest_statement, parse_dividend_files
     )
 
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     expense_dir = os.path.join(root_dir, "Expense")
+    dividend_dir = os.path.join(expense_dir, "Dividend")
+
+    # ── Dividend files ─────────────────────────────────────────
+    parsed_dividends = parse_dividend_files(dividend_dir)
 
     # ── MStock files ───────────────────────────────────────────
     # Moved to Expense directory
@@ -2663,24 +2667,38 @@ def analytics_expenses_interest(
         month_key = sd.strftime("%Y-%m")
         lifo_pnl_map[month_key] = lifo_pnl_map.get(month_key, 0.0) + float(row["pnl"])
 
-    # Collect all month keys
+    # Collect all month keys including dividend months
     zerodha_months = (
         set(zerodha_other.keys()) |
         set(zerodha_trade.keys()) |
         set(zerodha_mtf_position.keys())
     )
+
+    dividend_months = set()
+    for b_key, b_dict in parsed_dividends.items():
+        if selected_broker.lower() == "all" or selected_broker.lower() == b_key:
+            dividend_months.update(b_dict.keys())
+
     all_months = sorted(list(
         set(lifo_pnl_map.keys()) |
         set(mstock_ledger.keys()) |
         set(mstock_tax.keys()) |
         set(ka_mstock_ledger.keys()) |
         set(ka_mstock_tax.keys()) |
-        zerodha_months
+        zerodha_months |
+        dividend_months
     ))
     
     months_list = []
     for m in all_months:
         pnl = round(lifo_pnl_map.get(m, 0.0), 2)
+
+        # ── Dividend ──────────────────────────────────────────
+        if selected_broker.lower() == "all":
+            dividend_val = round(sum(b_dict.get(m, 0.0) for b_dict in parsed_dividends.values()), 2)
+        else:
+            b_dict = parsed_dividends.get(selected_broker.lower(), {})
+            dividend_val = round(b_dict.get(m, 0.0), 2)
 
         # ── MStock expenses ───────────────────────────────────
         if selected_broker.lower() in ("all", "mstock"):
@@ -2735,13 +2753,14 @@ def analytics_expenses_interest(
         total_mtf_pos    = max(ms_mtf_pos, ka_ms_mtf_pos, z_pos)
 
         actual_pnl = round(
-            pnl - total_mtf_int - total_dp - total_pledge - total_brokerage - total_tax_stt,
+            pnl + dividend_val - total_mtf_int - total_dp - total_pledge - total_brokerage - total_tax_stt,
             2
         )
 
         months_list.append({
             "month":          m,
             "realized_pnl":   pnl,
+            "dividend":       dividend_val,
             "mtf_interest":   total_mtf_int,
             "dp_charges":     total_dp,
             "pledge_charges": total_pledge,
