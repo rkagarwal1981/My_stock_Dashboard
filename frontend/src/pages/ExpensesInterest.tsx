@@ -302,7 +302,7 @@ const ExpensesInterest: React.FC = () => {
       {/* Master Month Range Filter Bar */}
       <Card sx={{ background: 'rgba(22,24,36,0.85)', border: '1px solid #2a2e43', borderRadius: 3, p: 2 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
-          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: '#38bdf8' }}>
               <FilterAltIcon fontSize="small" />
               <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#f8fafc' }}>
@@ -370,7 +370,7 @@ const ExpensesInterest: React.FC = () => {
           </Stack>
 
           {/* Quick Presets */}
-          <Stack direction="row" spacing={1} flexWrap="wrap">
+          <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
             <Chip
               label="All Time"
               size="small"
@@ -485,7 +485,10 @@ const ExpensesInterest: React.FC = () => {
               Manual Expense & Dividend File Locations:
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Dividend files are manually placed in: <strong>C:\My_work_RA\Antigravity\Expense\Dividend</strong>
+              Expense files are located in: <strong>C:\My_work_RA\Antigravity\Manual Data\Expense</strong>
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Dividend files are located in: <strong>C:\My_work_RA\Antigravity\Manual Data\Dividend</strong>
             </Typography>
             <Box sx={{ bgcolor: 'rgba(255,255,255,0.03)', p: 2, borderRadius: 2, border: '1px solid #2a2e43' }}>
               <Typography variant="body2" sx={{ fontFamily: 'monospace', mb: 0.5, color: '#38bdf8' }}>
@@ -505,7 +508,7 @@ const ExpensesInterest: React.FC = () => {
       {/* Info for Zerodha */}
       {broker === 'Zerodha' && data.zerodha_files_exist && (
         <Alert severity="success" sx={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', color: '#34d399' }}>
-          Realized P&L is loaded for Zerodha from database closed lots. Charges, interest, & dividends are sourced from Expense/ and Expense/Dividend/.
+          Realized P&L is loaded for Zerodha from database closed lots. Charges, interest, & dividends are sourced from Manual Data/Expense and Manual Data/Dividend.
         </Alert>
       )}
 

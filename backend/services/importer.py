@@ -58,6 +58,38 @@ def run_trade_pullers(force: bool = False):
         print(f"Error running pull_zerodha_trades.py: {e}")
 
 
+def run_holdings_pullers(force: bool = False):
+    """
+    Runs pull_mstock_holdings.py and pull_zerodha_holdings.py to sync official broker portfolio snapshots.
+    """
+    import subprocess
+    import sys
+    
+    workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    python_exe = sys.executable
+    
+    # Run MStock holdings puller
+    try:
+        print("Running pull_mstock_holdings.py for MStock...")
+        subprocess.run([python_exe, "pull_mstock_holdings.py", "--broker", "MStock"], cwd=workspace_root, check=False)
+    except Exception as e:
+        print(f"Error running pull_mstock_holdings.py for MStock: {e}")
+
+    # Run Mstock_KA holdings puller
+    try:
+        print("Running pull_mstock_holdings.py for Mstock_KA...")
+        subprocess.run([python_exe, "pull_mstock_holdings.py", "--broker", "Mstock_KA"], cwd=workspace_root, check=False)
+    except Exception as e:
+        print(f"Error running pull_mstock_holdings.py for Mstock_KA: {e}")
+
+    # Run Zerodha holdings puller
+    try:
+        print("Running pull_zerodha_holdings.py for Zerodha...")
+        subprocess.run([python_exe, "pull_zerodha_holdings.py"], cwd=workspace_root, check=False)
+    except Exception as e:
+        print(f"Error running pull_zerodha_holdings.py: {e}")
+
+
 def safe_parse_datetime(val, dayfirst=False):
     if pd.isna(val) or val is None:
         return None

@@ -34,51 +34,70 @@ def fetch_single_ticker_data(ticker: str) -> tuple:
         print(f"Error fetching price/change for ticker {ticker}: {e}")
     return 0.0, 0.0
 
+import time
+import threading
+
+_PRICE_CACHE: Dict[str, tuple] = {}  # ticker -> (price, change_pct, timestamp)
+_PRICE_CACHE_LOCK = threading.Lock()
+PRICE_CACHE_TTL = 15.0  # seconds
+
 def fetch_live_prices(scrip_names: List[str]) -> Dict[str, Dict[str, float]]:
     """
     Fetches live market prices and daily change percentage for a list of scrip names (e.g. 'UNOMINDA-EQ', 'HEROMOTOCO-EQ')
-    by querying Yahoo Finance Chart API in parallel.
+    by querying Yahoo Finance Chart API in parallel, with in-memory TTL caching.
     Returns a dictionary mapping the original scrip name to a dict with 'price' and 'change_pct'.
     """
     if not scrip_names:
         return {}
 
-    # Clean duplicates and map tickers for Yahoo Finance (.NS for Indian markets)
-    clean_mapping = {}  # yahoo_ticker -> original_scrip
-    tickers_list = []
-    
-    for name in scrip_names:
-        clean_name = name
-        if name.endswith("-EQ"):
-            clean_name = name[:-3]
-        
-        clean_name = clean_name.strip()
-        
-        if "FUT" in clean_name or "CALL" in clean_name or "PUT" in clean_name or "MCX" in name:
-            # Skip commodity futures or option instruments
-            continue
-            
-        yahoo_ticker = f"{clean_name}.NS"
-        clean_mapping[yahoo_ticker] = name
-        tickers_list.append(yahoo_ticker)
-        
-    tickers_list = list(set(tickers_list))
+    now = time.time()
     prices = {name: {"price": 0.0, "change_pct": 0.0} for name in scrip_names}
+
+    # Clean duplicates and map tickers for Yahoo Finance (.NS for Indian markets)
+    clean_mapping = {}  # yahoo_ticker -> list of original_scrips
+    tickers_to_fetch = []
     
-    if not tickers_list:
+    with _PRICE_CACHE_LOCK:
+        for name in scrip_names:
+            clean_name = name
+            if name.endswith("-EQ"):
+                clean_name = name[:-3]
+            
+            clean_name = clean_name.strip()
+            
+            if "FUT" in clean_name or "CALL" in clean_name or "PUT" in clean_name or "MCX" in name:
+                continue
+                
+            yahoo_ticker = f"{clean_name}.NS"
+            if yahoo_ticker not in clean_mapping:
+                clean_mapping[yahoo_ticker] = []
+            clean_mapping[yahoo_ticker].append(name)
+            
+            # Check cache
+            cached = _PRICE_CACHE.get(yahoo_ticker)
+            if cached and (now - cached[2]) < PRICE_CACHE_TTL and cached[0] > 0:
+                for orig in clean_mapping[yahoo_ticker]:
+                    prices[orig] = {"price": cached[0], "change_pct": cached[1]}
+            else:
+                if yahoo_ticker not in tickers_to_fetch:
+                    tickers_to_fetch.append(yahoo_ticker)
+
+    if not tickers_to_fetch:
         return prices
 
-    # Query in parallel to avoid sequential delays blocking the main uvicorn thread
-    max_workers = min(len(tickers_list), 15)
+    # Query uncached/expired in parallel
+    max_workers = min(len(tickers_to_fetch), 15)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_ticker = {executor.submit(fetch_single_ticker_data, t): t for t in tickers_list}
+        future_to_ticker = {executor.submit(fetch_single_ticker_data, t): t for t in tickers_to_fetch}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
-            orig_name = clean_mapping[ticker]
             try:
                 price, change_pct = future.result()
                 if price > 0.0:
-                    prices[orig_name] = {"price": price, "change_pct": change_pct}
+                    with _PRICE_CACHE_LOCK:
+                        _PRICE_CACHE[ticker] = (price, change_pct, time.time())
+                    for orig_name in clean_mapping.get(ticker, []):
+                        prices[orig_name] = {"price": price, "change_pct": change_pct}
             except Exception as e:
                 print(f"Exception retrieving price for {ticker}: {e}")
                 

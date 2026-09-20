@@ -49,6 +49,8 @@ def normalize_db_url(url: str) -> str:
 raw_url = os.getenv("DATABASE_URL", _SQLITE_FALLBACK)
 DATABASE_URL = normalize_db_url(raw_url)
 
+from sqlalchemy import event
+
 # SQLite requires check_same_thread=False; PostgreSQL does not support it.
 if DATABASE_URL.startswith("postgresql"):
     engine = create_engine(DATABASE_URL)
@@ -56,6 +58,18 @@ else:
     engine = create_engine(
         DATABASE_URL, connect_args={"check_same_thread": False}
     )
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA cache_size=-64000")  # 64MB memory cache
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.close()
+        except Exception:
+            pass
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

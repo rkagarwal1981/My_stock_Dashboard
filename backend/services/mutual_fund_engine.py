@@ -13,14 +13,20 @@ FUND_NAME_TO_CODE = {
     "HDFC Flexi Cap": "H",
     "PPFCF": "P",
     "Quant Flexi Cap": "Q",
-    "JM Financial": "J"
+    "JM Financial": "J",
+    "HDFC Value Funds": "HV",
+    "HSBC Value Fund": "HS",
+    "ICICI Value Fund": "IC"
 }
 
 FUND_CODE_TO_FULL_NAME = {
     "H": "HDFC Flexi Cap Fund",
     "P": "Parag Parikh Flexi Cap Fund",
     "Q": "Quant Flexi Cap Fund",
-    "J": "JM Flexicap Fund"
+    "J": "JM Flexicap Fund",
+    "HV": "HDFC Value Fund",
+    "HS": "HSBC Value Fund",
+    "IC": "ICICI Value Fund"
 }
 
 # Configurable stock name manual mapping
@@ -34,17 +40,29 @@ STABLE_RELATIVE_TOLERANCE = 0.02
 STABLE_ABSOLUTE_TOLERANCE = 0.05
 
 class MutualFundEngine:
-    def __init__(self, file_path: str = r"c:\My_Data\Shares Market\Antigravity\Mutual Funds data.xlsx"):
+    def __init__(self, dir_or_file_path: Optional[str] = None):
         workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if not os.path.exists(file_path):
-            fallback = os.path.join(workspace_root, "Mutual Funds data.xlsx")
-            if os.path.exists(fallback):
-                file_path = fallback
-        self.file_path = file_path
+        if dir_or_file_path is None or not os.path.exists(dir_or_file_path):
+            mf_dir = os.path.join(workspace_root, "Manual Data", "Mutual Funds")
+            if os.path.exists(mf_dir):
+                self.mf_dir = mf_dir
+                self.file_path = None
+            else:
+                fallback = os.path.join(workspace_root, "Mutual Funds data.xlsx")
+                self.mf_dir = None
+                self.file_path = fallback if os.path.exists(fallback) else dir_or_file_path
+        elif os.path.isdir(dir_or_file_path):
+            self.mf_dir = dir_or_file_path
+            self.file_path = None
+        else:
+            self.file_path = dir_or_file_path
+            self.mf_dir = None
+
         self.last_modified_time: float = 0.0
         self._cached_df: Optional[pd.DataFrame] = None
         self._cached_summary: Optional[Dict[str, Any]] = None
         self._validation_issues: List[Dict[str, Any]] = []
+        self._cached_match_index: Optional[Dict[str, Any]] = None
 
     def _normalize_name(self, name: str) -> str:
         """
@@ -70,56 +88,113 @@ class MutualFundEngine:
         cleaned_words = [w for w in words if w not in suffixes]
         return " ".join(cleaned_words)
 
+    def _normalize_month_str(self, month_val: Any) -> str:
+        """
+        Normalizes any month string (e.g. 'Aug-2026', 'Aug 2026') to 'Aug 2026'.
+        """
+        if pd.isna(month_val) or month_val is None:
+            return ""
+        s = str(month_val).strip()
+        from datetime import datetime
+        for fmt in ("%b %Y", "%b-%Y", "%B %Y", "%B-%Y", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                return dt.strftime("%b %Y")
+            except ValueError:
+                pass
+        try:
+            ts = pd.Timestamp(s)
+            return ts.strftime("%b %Y")
+        except Exception:
+            return s
+
     def _parse_month(self, month_str: str) -> Optional[str]:
         """
-        Parses Month string like 'Mar 2026' into a standard date string.
+        Parses Month string like 'Mar 2026' or 'Mar-2026' into a standard date string 'YYYY-MM-DD'.
         """
+        if pd.isna(month_str) or not str(month_str).strip():
+            return None
+        norm = self._normalize_month_str(month_str)
         try:
             from datetime import datetime
-            dt = datetime.strptime(month_str.strip(), "%b %Y")
+            dt = datetime.strptime(norm, "%b %Y")
             return dt.strftime("%Y-%m-%d")
         except Exception:
             try:
-                ts = pd.Timestamp(month_str.strip())
+                ts = pd.Timestamp(norm)
                 return ts.strftime("%Y-%m-%d")
             except Exception:
                 return None
 
     def _load_and_process(self) -> None:
         """
-        Loads the excel file, validates the schema/data quality,
-        computes normalized values, and updates cache.
+        Loads the excel/csv files from folder or single path, validates the schema/data quality,
+        computes normalized values, assigns MF Category, and updates cache.
         """
-        if not os.path.exists(self.file_path):
-            raise FileNotFoundError(f"Mutual Funds Excel file not found at: {self.file_path}")
+        files_to_load = []
+        if self.mf_dir and os.path.exists(self.mf_dir):
+            for fname in os.listdir(self.mf_dir):
+                if fname.startswith("~$") or fname.startswith("."):
+                    continue
+                if fname.lower().endswith((".xlsx", ".xls", ".csv")):
+                    files_to_load.append(os.path.join(self.mf_dir, fname))
+        elif self.file_path and os.path.exists(self.file_path):
+            files_to_load.append(self.file_path)
 
-        mtime = os.path.getmtime(self.file_path)
-        if self._cached_df is not None and mtime <= self.last_modified_time:
+        if not files_to_load:
+            raise FileNotFoundError(f"Mutual Funds data files not found in: {self.mf_dir or self.file_path}")
+
+        current_mtime = max(os.path.getmtime(f) for f in files_to_load)
+        if self._cached_df is not None and current_mtime <= self.last_modified_time:
             return  # Cache is up to date
 
-        logger.info(f"Reloading Mutual Funds data from {self.file_path} (mtime changed)...")
-        df = pd.read_excel(self.file_path)
+        logger.info(f"Reloading Mutual Funds data from {len(files_to_load)} files (mtime changed)...")
+        dfs = []
         self._validation_issues = []
 
-        # Validate Schema Columns
-        required_cols = ["Mutual Fund", "Month", "ISIN", "Stock Name", "Quantity", "LTP", "Value"]
-        for col in required_cols:
-            if col not in df.columns:
-                issue = {"row": None, "issue": f"Missing required column: {col}", "severity": "ERROR"}
-                self._validation_issues.append(issue)
-                logger.error(issue["issue"])
+        required_cols = ["Mutual Fund", "Month", "ISIN", "Stock Name", "Quantity", "LTP"]
 
-        # Check unexpected fund names
+        for fpath in sorted(files_to_load):
+            fname = os.path.basename(fpath).lower()
+            category = "Flexicap"
+            if "value" in fname:
+                category = "Value"
+            elif "flexi" in fname:
+                category = "Flexicap"
+
+            if fpath.lower().endswith(".csv"):
+                df_single = pd.read_csv(fpath)
+            else:
+                df_single = pd.read_excel(fpath)
+
+            df_single.columns = [str(c).strip() for c in df_single.columns]
+            df_single["MF Category"] = category
+
+            # Validate Schema Columns
+            for col in required_cols:
+                if col not in df_single.columns:
+                    issue = {"file": os.path.basename(fpath), "issue": f"Missing required column: {col}", "severity": "ERROR"}
+                    self._validation_issues.append(issue)
+                    logger.error(f"{os.path.basename(fpath)}: {issue['issue']}")
+
+            # Normalize Month
+            if "Month" in df_single.columns:
+                df_single["Month"] = df_single["Month"].apply(self._normalize_month_str)
+
+            dfs.append(df_single)
+
+        df = pd.concat(dfs, ignore_index=True)
+
+        # Check unexpected fund names & data quality
         for idx, row in df.iterrows():
             fund = row.get("Mutual Fund")
             if pd.isna(fund) or fund not in FUND_NAME_TO_CODE:
                 self._validation_issues.append({
-                    "row": idx + 2, # Excel sheet row is 1-indexed + header
+                    "row": idx + 2,
                     "issue": f"Unexpected or blank fund name: {fund}",
                     "severity": "WARNING"
                 })
 
-            # Check unexpected month format
             month = row.get("Month")
             if pd.isna(month) or self._parse_month(str(month)) is None:
                 self._validation_issues.append({
@@ -128,7 +203,6 @@ class MutualFundEngine:
                     "severity": "WARNING"
                 })
 
-            # Missing Stock Name
             stock_name = row.get("Stock Name")
             if pd.isna(stock_name) or str(stock_name).strip() == "":
                 self._validation_issues.append({
@@ -137,7 +211,6 @@ class MutualFundEngine:
                     "severity": "ERROR"
                 })
 
-            # Blank or invalid Quantity
             qty = row.get("Quantity")
             if pd.isna(qty) or not isinstance(qty, (int, float)) or qty <= 0:
                 self._validation_issues.append({
@@ -146,7 +219,6 @@ class MutualFundEngine:
                     "severity": "ERROR"
                 })
 
-            # Blank or invalid LTP
             ltp = row.get("LTP")
             if pd.isna(ltp) or not isinstance(ltp, (int, float)) or ltp < 0:
                 self._validation_issues.append({
@@ -155,7 +227,6 @@ class MutualFundEngine:
                     "severity": "ERROR"
                 })
             elif ltp == 0:
-                # LTP can be 0 for Rights Entitlements etc., log as warning
                 self._validation_issues.append({
                     "row": idx + 2,
                     "issue": f"LTP is 0 for {row.get('Stock Name')}",
@@ -169,8 +240,7 @@ class MutualFundEngine:
         df["Holding Value"] = df["Quantity"] * df["LTP"]
         df["Holding Value Crore"] = df["Holding Value"] / 10000000.0
 
-        # Check duplicate Mutual Fund + Month + Stock
-        # (check duplicates on ISIN first, then on Stock Name if ISIN not available)
+        # Check duplicate Mutual Fund + Month + ISIN
         dup_mask = df.duplicated(subset=["Mutual Fund", "Month", "ISIN"], keep=False)
         dups = df[dup_mask]
         if not dups.empty:
@@ -182,9 +252,10 @@ class MutualFundEngine:
                 })
 
         self._cached_df = df
-        self.last_modified_time = mtime
+        self.last_modified_time = current_mtime
         self._cached_summary = None  # Reset summary cache
-        logger.info("Mutual Funds data processed and cached successfully.")
+        self._cached_match_index = None  # Reset match index cache
+        logger.info(f"Mutual Funds data ({len(df)} rows across {len(files_to_load)} files) processed successfully.")
 
     def get_raw_dataframe(self) -> pd.DataFrame:
         self._load_and_process()
@@ -204,24 +275,29 @@ class MutualFundEngine:
 
         df = self._cached_df
         available_funds = df["Mutual Fund"].dropna().unique().tolist()
-        available_months = sorted(df["Month"].dropna().unique().tolist(), key=lambda m: self._parse_month(m) or pd.Timestamp.min)
-        
-        parsed_months = [self._parse_month(m) for m in available_months if self._parse_month(m) is not None]
+        available_months = sorted(df["Month"].dropna().unique().tolist(), key=lambda m: self._parse_month(m) or "1970-01-01")
+        categories = df["MF Category"].dropna().unique().tolist()
+
         earliest_month = available_months[0] if available_months else "N/A"
         latest_month = available_months[-1] if available_months else "N/A"
 
-        unique_stocks_isin = df["ISIN"].dropna().unique().tolist()
         unique_stocks_names = df["Stock Name"].dropna().unique().tolist()
 
         # Check duplicates on [Mutual Fund, Month, ISIN]
         duplicates_count = df.duplicated(subset=["Mutual Fund", "Month", "ISIN"]).sum()
 
         self._cached_summary = {
-            "source_file": os.path.basename(self.file_path),
-            "file_size_bytes": os.path.getsize(self.file_path) if os.path.exists(self.file_path) else 0,
-            "columns": df.columns.tolist(),
+            "source_file": os.path.basename(self.mf_dir) if self.mf_dir else (os.path.basename(self.file_path) if self.file_path else "Mutual Funds"),
             "number_of_funds": len(available_funds),
-            "available_funds": [{"name": f, "code": FUND_NAME_TO_CODE.get(f, "U")} for f in available_funds],
+            "available_funds": [
+                {
+                    "name": f,
+                    "code": FUND_NAME_TO_CODE.get(f, "U"),
+                    "category": df[df["Mutual Fund"] == f]["MF Category"].iloc[0] if not df[df["Mutual Fund"] == f].empty else "Flexicap"
+                }
+                for f in available_funds
+            ],
+            "categories": categories,
             "number_of_months": len(available_months),
             "available_months": available_months,
             "earliest_month": earliest_month,
@@ -302,37 +378,47 @@ class MutualFundEngine:
 
         return None
 
-    def compute_analytics(self, selected_fund_code: Optional[str] = None) -> List[Dict[str, Any]]:
+    def compute_analytics(self, selected_fund_code: Optional[str] = None, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Calculates chronological month-by-month holdings, value, changes,
-        trends (MoM changes, NEW, EXITED, continuous increases/decreases, and 5-month trends).
+        trends (MoM changes, NEW, EXITED, continuous increases/decreases, and 5-month trends),
+        and overall stock appearance count across all mutual fund schemes.
         """
         self._load_and_process()
-        df = self._cached_df
+        full_df = self._cached_df
+        if full_df is None or full_df.empty:
+            return []
 
+        # Precompute stock total appearance count across all schemes in the full dataset
+        full_stock_groups = full_df.groupby(["Fund Code", "Mutual Fund", "ISIN", "Stock Name"]).groups.keys()
+        stock_total_counts = {}
+        for (fc, fm, isin_v, sname_v) in full_stock_groups:
+            isin_k = str(isin_v or "").strip().upper()
+            norm_k = self._normalize_name(sname_v or "")
+            k = isin_k if isin_k else norm_k
+            stock_total_counts[k] = stock_total_counts.get(k, 0) + 1
+
+        df = full_df
         if selected_fund_code and selected_fund_code != "ALL":
             df = df[df["Fund Code"] == selected_fund_code]
+
+        if category and category != "ALL":
+            df = df[df["MF Category"] == category]
 
         # Chronological months
         months = self.get_available_months()
         if not months:
             return []
 
-        # If a single fund is selected, we just group by Stock Name + Month
-        # If "ALL" is selected, we aggregate holdings across ALL funds for each month.
-        # But wait! If "ALL" is selected, does a stock have value representing sum of all funds?
-        # Yes, we group by ISIN/Stock Name and Month and sum their Quantity, Value, and compute weighted LTP.
-        # Let's group by Stock Name (or ISIN) to compute stock-level analytics.
-        
-        # We group by (Fund Code, Mutual Fund, ISIN, Stock Name, Symbol, Industry)
+        # We group by (Fund Code, Mutual Fund, MF Category, ISIN, Stock Name, Symbol, Industry)
         # so each mutual fund scheme holding a stock is computed as an independent row model
-        stock_groups = df.groupby(["Fund Code", "Mutual Fund", "ISIN", "Stock Name", "Stock Name.1", "Industry"]).groups
+        stock_groups = df.groupby(["Fund Code", "Mutual Fund", "MF Category", "ISIN", "Stock Name", "Stock Name.1", "Industry"]).groups
         
         analytics_list = []
 
         latest_m_global = months[-1]
 
-        for (f_code, f_name, isin, name, symbol, industry) in stock_groups.keys():
+        for (f_code, f_name, f_cat, isin, name, symbol, industry) in stock_groups.keys():
             # Get data for this fund scheme and stock
             stock_df = df[(df["Fund Code"] == f_code) & (df["ISIN"] == isin) & (df["Stock Name"] == name)]
             
@@ -496,14 +582,20 @@ class MutualFundEngine:
             if not holding_funds:
                 all_holding_df = self._cached_df[(self._cached_df["Stock Name"] == name) & (self._cached_df["Month"] == latest_m_global) & (self._cached_df["Holding Value Crore"] > 0)]
                 holding_funds = all_holding_df["Fund Code"].unique().tolist()
-            
+
+            # Overall stock count across all schemes in dataset
+            stock_k = isin.upper().strip() if (isin and isin.strip()) else self._normalize_name(name)
+            stock_appearance_count = stock_total_counts.get(stock_k, 1)
+
             analytics_list.append({
                 "fund_code": f_code,
                 "mutual_fund": f_name,
+                "mf_category": f_cat,
                 "isin": isin,
                 "stock_name": name,
                 "symbol": symbol,
                 "industry": industry,
+                "count": stock_appearance_count,
                 "status": status,
                 "latest_quantity": month_values[latest_idx]["quantity"],
                 "latest_value_crore": latest_val,
@@ -638,157 +730,207 @@ class MutualFundEngine:
 
         return report
 
+    def _build_holdings_match_index(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Pre-indexes all stock records for the latest month into a high-speed lookup map.
+        Keyed by: ISIN, Symbol (without -EQ and with -EQ), and normalized stock name.
+        """
+        df = self._cached_df
+        months = self.get_available_months()
+        if not months or df is None:
+            return {}
+        latest_m = months[-1]
+        latest_mf_df = df[df["Month"] == latest_m]
+        
+        # Precompute stock historical lookup table
+        # Group by ISIN + Fund Code + Month, and Normalized Stock Name + Fund Code + Month
+        hist_by_isin = df[df["ISIN"].notna()].groupby(["ISIN", "Fund Code", "Month"])["Holding Value Crore"].sum().to_dict()
+        hist_by_name = df.groupby(["Normalized Stock Name", "Fund Code", "Month"])["Holding Value Crore"].sum().to_dict()
+        
+        # Unique stocks in latest month per fund
+        latest_records = latest_mf_df.to_dict("records")
+        
+        # Group by unique ISIN (if available) or Normalized Stock Name
+        stock_fund_map = {}
+        for r in latest_records:
+            isin = str(r.get("ISIN") or "").strip().upper()
+            stock_name = str(r.get("Stock Name") or "").strip()
+            norm_name = str(r.get("Normalized Stock Name") or self._normalize_name(stock_name))
+            symbol = str(r.get("Stock Name.1") or "").strip()
+            f_code = r.get("Fund Code")
+            f_name = r.get("Mutual Fund")
+            f_cat = r.get("MF Category") or ("Value" if f_code in ["HV", "HS", "IC"] else "Flexicap")
+            
+            key = isin if isin else norm_name
+            if key not in stock_fund_map:
+                stock_fund_map[key] = {
+                    "isin": isin,
+                    "stock_name": stock_name,
+                    "norm_name": norm_name,
+                    "symbols": set([symbol]) if symbol else set(),
+                    "funds": []
+                }
+            else:
+                if symbol:
+                    stock_fund_map[key]["symbols"].add(symbol)
+                
+            val_latest = float(r.get("Holding Value Crore")) if pd.notna(r.get("Holding Value Crore")) else 0.0
+            
+            def get_hist(m_key):
+                if isin and (isin, f_code, m_key) in hist_by_isin:
+                    return hist_by_isin.get((isin, f_code, m_key), 0.0)
+                return hist_by_name.get((norm_name, f_code, m_key), 0.0)
+
+            val_prev  = get_hist(months[-2]) if len(months) >= 2 else 0.0
+            val_prev2 = get_hist(months[-3]) if len(months) >= 3 else 0.0
+            val_prev3 = get_hist(months[-4]) if len(months) >= 4 else 0.0
+            val_prev4 = get_hist(months[-5]) if len(months) >= 5 else 0.0
+            
+            change_1m = val_latest - val_prev
+            change_1m_pct = ((val_latest - val_prev) / val_prev * 100.0) if val_prev > 0.0001 else 0.0
+            if val_prev <= 0.0001 and val_latest > 0.0001:
+                change_1m_pct = 0.0
+
+            change_2m = val_latest - val_prev2
+            change_2m_pct = ((val_latest - val_prev2) / val_prev2 * 100.0) if val_prev2 > 0.0001 else 0.0
+            if val_prev2 <= 0.0001 and val_latest > 0.0001:
+                change_2m_pct = 0.0
+
+            change_3m = val_latest - val_prev3
+            change_3m_pct = ((val_latest - val_prev3) / val_prev3 * 100.0) if val_prev3 > 0.0001 else 0.0
+            if val_prev3 <= 0.0001 and val_latest > 0.0001:
+                change_3m_pct = 0.0
+            
+            if val_prev <= 0.0001 and val_latest > 0.0001:
+                trend_3m = "New Entry"
+            else:
+                if val_latest > val_prev + 0.0001 and val_prev > val_prev2 + 0.0001:
+                    trend_3m = "Accumulating"
+                elif val_latest < val_prev - 0.0001 and val_prev < val_prev2 - 0.0001:
+                    trend_3m = "Reducing"
+                elif abs(val_latest - val_prev) < 0.0001 and abs(val_prev - val_prev2) < 0.0001:
+                    trend_3m = "Stable"
+                else:
+                    trend_3m = "Mixed"
+
+            inc_3m = False
+            dec_3m = False
+            if len(months) >= 4:
+                if val_latest > val_prev + 0.0001 and val_prev > val_prev2 + 0.0001 and val_prev2 > val_prev3 + 0.0001:
+                    inc_3m = True
+                elif val_latest < val_prev - 0.0001 and val_prev < val_prev2 - 0.0001 and val_prev2 < val_prev3 - 0.0001:
+                    dec_3m = True
+
+            consistent_5m = False
+            trend_5m = "N/A"
+            if len(months) >= 5:
+                vals = [val_prev4, val_prev3, val_prev2, val_prev, val_latest]
+                if all(v > 0.0001 for v in vals):
+                    consistent_5m = True
+                    avg_val = sum(vals) / 5.0
+                    max_val = max(vals)
+                    min_val = min(vals)
+                    rel_tol = avg_val * STABLE_RELATIVE_TOLERANCE
+                    tol = max(rel_tol, STABLE_ABSOLUTE_TOLERANCE)
+                    if (max_val - min_val) <= tol:
+                        trend_5m = "Stable"
+                    else:
+                        increases = 0
+                        decreases = 0
+                        for i in range(1, 5):
+                            if vals[i] > vals[i-1] + 0.0001:
+                                increases += 1
+                            elif vals[i] < vals[i-1] - 0.0001:
+                                decreases += 1
+                        if vals[-1] > vals[0] + 0.0001 and increases > decreases:
+                            trend_5m = "Gradually Increasing"
+                        elif vals[-1] < vals[0] - 0.0001 and decreases > increases:
+                            trend_5m = "Gradually Decreasing"
+                        else:
+                            trend_5m = "Mixed"
+
+            portfolio_signal = "Stable Holding" if (consistent_5m and trend_5m == "Stable") else "Active"
+            if val_prev <= 0.0001:
+                portfolio_signal = "New Entry"
+            elif inc_3m:
+                portfolio_signal = "Strong Accumulation"
+            elif val_latest > val_prev + 0.0001:
+                portfolio_signal = "Accumulating"
+            elif dec_3m:
+                portfolio_signal = "Strong Reduction"
+            elif val_latest < val_prev - 0.0001:
+                portfolio_signal = "Reducing"
+                    
+            stock_fund_map[key]["funds"].append({
+                "fund_code": f_code,
+                "fund_name": f_name,
+                "mf_category": f_cat,
+                "latest_value": val_latest,
+                "change_1m": change_1m,
+                "change_1m_pct": change_1m_pct,
+                "change_2m": change_2m,
+                "change_2m_pct": change_2m_pct,
+                "change_3m": change_3m,
+                "change_3m_pct": change_3m_pct,
+                "trend_3m": trend_3m,
+                "portfolio_signal": portfolio_signal
+            })
+
+        # Build index mapping multiple identifier variations to fund list
+        lookup = {}
+        for item in stock_fund_map.values():
+            funds = item["funds"]
+            isin = item["isin"]
+            norm_name = item["norm_name"]
+            
+            if isin:
+                lookup[isin] = funds
+            if norm_name:
+                lookup[norm_name] = funds
+            for sym in item["symbols"]:
+                sym_clean = sym.upper().strip()
+                if sym_clean:
+                    lookup[sym_clean] = funds
+                    lookup[f"{sym_clean}-EQ"] = funds
+                
+        return lookup
+
     def get_matching_funds_for_holdings(self, live_holdings: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """
         For each live holding, returns a list of mutual funds holding it in the latest month.
-        Returns a dict mapping: live_scrip -> list of fund info dicts
+        Uses fast pre-indexed memory lookup for instant O(1) execution.
         """
         self._load_and_process()
-        df = self._cached_df
-        months = self.get_available_months()
-        if not months:
-            return {}
-        latest_m = months[-1]
-        
-        # Get all mutual fund records for the latest month
-        latest_mf_df = df[df["Month"] == latest_m]
-        
+        if not hasattr(self, "_cached_match_index") or self._cached_match_index is None:
+            self._cached_match_index = self._build_holdings_match_index()
+            
+        index = self._cached_match_index
         matches = {}
+        
         for lh in live_holdings:
-            scrip = lh.get("script")
+            scrip = lh.get("script", "")
             if not scrip:
                 continue
-            matches[scrip] = []
+                
+            clean_scrip = scrip[:-3] if scrip.endswith("-EQ") else scrip
+            isin = (lh.get("isin") or "").upper().strip()
             
-            # Group latest mutual fund holdings by Fund Code
-            grouped = latest_mf_df.groupby("Fund Code")
-            for f_code, f_df in grouped:
-                # Check if this fund holds the stock
-                for _, r in f_df.iterrows():
-                    mf_item = {
-                        "ISIN": r.get("ISIN"),
-                        "Stock Name": r.get("Stock Name"),
-                        "Stock Name.1": r.get("Stock Name.1"),
-                        "Industry": r.get("Industry"),
-                        "Mutual Fund": r.get("Mutual Fund"),
-                        "Fund Code": r.get("Fund Code")
-                    }
-                    if self.match_stock(mf_item, [lh]):
-                        # Found a match! Let's get the historical data of this stock in this fund
-                        stock_df = df[(df["ISIN"] == r.get("ISIN")) & (df["Stock Name"] == r.get("Stock Name"))]
-                        
-                        val_latest = float(r.get("Holding Value Crore")) if pd.notna(r.get("Holding Value Crore")) else 0.0
-                        
-                        val_prev = 0.0
-                        val_prev2 = 0.0
-                        val_prev3 = 0.0
-                        val_prev4 = 0.0
-                        if len(months) >= 2:
-                            prev_m = months[-2]
-                            prev_df = stock_df[(stock_df["Fund Code"] == f_code) & (stock_df["Month"] == prev_m)]
-                            val_prev = float(prev_df["Holding Value Crore"].sum()) if not prev_df.empty else 0.0
-                        if len(months) >= 3:
-                            prev2_m = months[-3]
-                            prev2_df = stock_df[(stock_df["Fund Code"] == f_code) & (stock_df["Month"] == prev2_m)]
-                            val_prev2 = float(prev2_df["Holding Value Crore"].sum()) if not prev2_df.empty else 0.0
-                        if len(months) >= 4:
-                            prev3_m = months[-4]
-                            prev3_df = stock_df[(stock_df["Fund Code"] == f_code) & (stock_df["Month"] == prev3_m)]
-                            val_prev3 = float(prev3_df["Holding Value Crore"].sum()) if not prev3_df.empty else 0.0
-                        if len(months) >= 5:
-                            prev4_m = months[-5]
-                            prev4_df = stock_df[(stock_df["Fund Code"] == f_code) & (stock_df["Month"] == prev4_m)]
-                            val_prev4 = float(prev4_df["Holding Value Crore"].sum()) if not prev4_df.empty else 0.0
-                        
-                        change_1m = val_latest - val_prev
-                        change_1m_pct = ((val_latest - val_prev) / val_prev * 100.0) if val_prev > 0.0001 else 0.0
-                        if val_prev <= 0.0001 and val_latest > 0.0001:
-                            change_1m_pct = 0.0
-
-                        change_2m = val_latest - val_prev2
-                        change_2m_pct = ((val_latest - val_prev2) / val_prev2 * 100.0) if val_prev2 > 0.0001 else 0.0
-                        if val_prev2 <= 0.0001 and val_latest > 0.0001:
-                            change_2m_pct = 0.0
-
-                        change_3m = val_latest - val_prev3
-                        change_3m_pct = ((val_latest - val_prev3) / val_prev3 * 100.0) if val_prev3 > 0.0001 else 0.0
-                        if val_prev3 <= 0.0001 and val_latest > 0.0001:
-                            change_3m_pct = 0.0
-                        
-                        if val_prev <= 0.0001 and val_latest > 0.0001:
-                            trend_3m = "New Entry"
-                        else:
-                            # 3-month trend category classification
-                            if val_latest > val_prev + 0.0001 and val_prev > val_prev2 + 0.0001:
-                                trend_3m = "Accumulating"
-                            elif val_latest < val_prev - 0.0001 and val_prev < val_prev2 - 0.0001:
-                                trend_3m = "Reducing"
-                            elif abs(val_latest - val_prev) < 0.0001 and abs(val_prev - val_prev2) < 0.0001:
-                                trend_3m = "Stable"
-                            else:
-                                trend_3m = "Mixed"
-
-                        # Portfolio Signal calculation per fund
-                        inc_3m = False
-                        dec_3m = False
-                        if len(months) >= 4:
-                            if val_latest > val_prev + 0.0001 and val_prev > val_prev2 + 0.0001 and val_prev2 > val_prev3 + 0.0001:
-                                inc_3m = True
-                            elif val_latest < val_prev - 0.0001 and val_prev < val_prev2 - 0.0001 and val_prev2 < val_prev3 - 0.0001:
-                                dec_3m = True
-
-                        consistent_5m = False
-                        trend_5m = "N/A"
-                        if len(months) >= 5:
-                            vals = [val_prev4, val_prev3, val_prev2, val_prev, val_latest]
-                            if all(v > 0.0001 for v in vals):
-                                consistent_5m = True
-                                avg_val = sum(vals) / 5.0
-                                max_val = max(vals)
-                                min_val = min(vals)
-                                rel_tol = avg_val * STABLE_RELATIVE_TOLERANCE
-                                tol = max(rel_tol, STABLE_ABSOLUTE_TOLERANCE)
-                                if (max_val - min_val) <= tol:
-                                    trend_5m = "Stable"
-                                else:
-                                    increases = 0
-                                    decreases = 0
-                                    for i in range(1, 5):
-                                        if vals[i] > vals[i-1] + 0.0001:
-                                            increases += 1
-                                        elif vals[i] < vals[i-1] - 0.0001:
-                                            decreases += 1
-                                    if vals[-1] > vals[0] + 0.0001 and increases > decreases:
-                                        trend_5m = "Gradually Increasing"
-                                    elif vals[-1] < vals[0] - 0.0001 and decreases > increases:
-                                        trend_5m = "Gradually Decreasing"
-                                    else:
-                                        trend_5m = "Mixed"
-
-                        portfolio_signal = "Stable Holding" if (consistent_5m and trend_5m == "Stable") else "Active"
-                        if val_prev <= 0.0001:
-                            portfolio_signal = "New Entry"
-                        elif inc_3m:
-                            portfolio_signal = "Strong Accumulation"
-                        elif val_latest > val_prev + 0.0001:
-                            portfolio_signal = "Accumulating"
-                        elif dec_3m:
-                            portfolio_signal = "Strong Reduction"
-                        elif val_latest < val_prev - 0.0001:
-                            portfolio_signal = "Reducing"
-                                
-                        matches[scrip].append({
-                            "fund_code": f_code,
-                            "fund_name": r.get("Mutual Fund"),
-                            "latest_value": val_latest,
-                            "change_1m": change_1m,
-                            "change_1m_pct": change_1m_pct,
-                            "change_2m": change_2m,
-                            "change_2m_pct": change_2m_pct,
-                            "change_3m": change_3m,
-                            "change_3m_pct": change_3m_pct,
-                            "trend_3m": trend_3m,
-                            "portfolio_signal": portfolio_signal
-                        })
-                        break # Go to next fund code
+            # Lookup order: ISIN -> scrip -> clean_scrip -> normalized name -> manual map
+            matched_funds = None
+            if isin and isin in index:
+                matched_funds = index[isin]
+            elif scrip.upper() in index:
+                matched_funds = index[scrip.upper()]
+            elif clean_scrip.upper() in index:
+                matched_funds = index[clean_scrip.upper()]
+            else:
+                norm = self._normalize_name(clean_scrip)
+                if norm in index:
+                    matched_funds = index[norm]
+                elif clean_scrip in MANUAL_STOCK_MAP:
+                    mapped = MANUAL_STOCK_MAP[clean_scrip]
+                    matched_funds = index.get(mapped.upper()) or index.get(self._normalize_name(mapped))
+                    
+            matches[scrip] = matched_funds or []
+            
         return matches

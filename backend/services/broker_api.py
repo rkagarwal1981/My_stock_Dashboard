@@ -165,25 +165,54 @@ class MStockClient:
         print("[MStock API] Authentication Successful!")
         return mconnect
 
-    def fetch_holdings(self) -> List[dict]:
+    def fetch_holdings(self, broker: str = "MStock") -> List[dict]:
         if not self.mconnect:
             self.login()
             
         if not self.mconnect:
             raise ValueError("MStock connection is not initialized. Please ensure login is successful.")
             
-        holdings_resp = self.mconnect.get_holdings()
         raw_holdings = []
-        if hasattr(holdings_resp, "json"):
-            resp_json = holdings_resp.json()
-            if isinstance(resp_json, dict):
-                raw_holdings = resp_json.get("data", [])
-            elif isinstance(resp_json, list):
-                raw_holdings = resp_json
-        else:
-            raw_holdings = holdings_resp
-            
-        normalized = []
+        try:
+            holdings_resp = self.mconnect.get_holdings()
+            if hasattr(holdings_resp, "json"):
+                resp_json = holdings_resp.json()
+                if isinstance(resp_json, dict) and resp_json.get("data"):
+                    h_data = resp_json.get("data")
+                    if isinstance(h_data, list):
+                        raw_holdings.extend(h_data)
+                    elif isinstance(h_data, dict):
+                        raw_holdings.extend(h_data.get("holdings") or h_data.get("portfolio") or [])
+                    else:
+                        raw_holdings.extend(resp_json.get("holdings") or resp_json.get("portfolio") or [])
+                elif isinstance(resp_json, list):
+                    raw_holdings.extend(resp_json)
+            elif isinstance(holdings_resp, list):
+                raw_holdings.extend(holdings_resp)
+        except Exception as eh:
+            print(f"[MStock API] get_holdings exception: {eh}")
+
+        # Fetch MTF positions from get_net_position
+        try:
+            pos_resp = self.mconnect.get_net_position()
+            if hasattr(pos_resp, "json"):
+                resp_json = pos_resp.json()
+                if isinstance(resp_json, dict) and resp_json.get("data"):
+                    pos_data = resp_json.get("data")
+                    if isinstance(pos_data, dict):
+                        raw_positions = pos_data.get("net") or pos_data.get("position") or []
+                    elif isinstance(pos_data, list):
+                        raw_positions = pos_data
+                    else:
+                        raw_positions = []
+                        
+                    for pos in raw_positions:
+                        if pos.get("product") == "F" and float(pos.get("quantity") or 0) > 0:
+                            raw_holdings.append(pos)
+        except Exception as ep:
+            print(f"[MStock API] get_net_position exception: {ep}")
+
+        parsed_items = []
         if isinstance(raw_holdings, list):
             for item in raw_holdings:
                 scrip = (item.get("tradingSymbol") or item.get("tradingsymbol") or item.get("symbol") or item.get("scrip") or item.get("script") or "").strip()
@@ -196,11 +225,11 @@ class MStockClient:
                 qty = float(item.get("quantity") or item.get("qty") or item.get("total_qty") or 0.0)
                 if qty <= 0:
                     continue
-                avg_price = float(item.get("avg_price") or item.get("averagePrice") or item.get("average_price") or item.get("avgPrice") or item.get("buy_price") or 0.0)
-                ltp = float(item.get("ltp") or item.get("lastPrice") or item.get("last_price") or avg_price)
+                avg_price = float(item.get("avg_price") or item.get("averagePrice") or item.get("average_price") or item.get("avgPrice") or item.get("buy_price") or item.get("price") or 0.0)
+                ltp = float(item.get("ltp") or item.get("lastPrice") or item.get("last_price") or item.get("closePrice") or item.get("close_price") or avg_price)
                 
-                normalized.append({
-                    "broker": "MStock",
+                parsed_items.append({
+                    "broker": broker,
                     "script": scrip,
                     "quantity": qty,
                     "avg_price": avg_price,
@@ -208,7 +237,36 @@ class MStockClient:
                     "current_value": qty * ltp,
                     "pnl": (qty * ltp) - (qty * avg_price)
                 })
-        return normalized
+
+        # Group by scrip to merge duplicate CNC and MTF positions
+        grouped = {}
+        for h in parsed_items:
+            scrip = h["script"]
+            if scrip not in grouped:
+                grouped[scrip] = []
+            grouped[scrip].append(h)
+            
+        holdings = []
+        for scrip, items in grouped.items():
+            if len(items) == 1:
+                holdings.append(items[0])
+            else:
+                total_qty = sum(x["quantity"] for x in items)
+                total_cost = sum(x["quantity"] * x["avg_price"] for x in items)
+                avg_price = round(total_cost / total_qty, 4) if total_qty > 0 else 0.0
+                first = items[0]
+                cur_val = total_qty * first["ltp"]
+                pnl = cur_val - (total_qty * avg_price)
+                holdings.append({
+                    "broker": first["broker"],
+                    "script": scrip,
+                    "quantity": total_qty,
+                    "avg_price": avg_price,
+                    "ltp": first["ltp"],
+                    "current_value": cur_val,
+                    "pnl": pnl
+                })
+        return holdings
 
     def fetch_transactions(self, days_back: int = 365) -> List[dict]:
         if not self.mconnect:

@@ -18,7 +18,7 @@ import RemoveIcon from '@mui/icons-material/Remove';
 import StarIcon from '@mui/icons-material/Star';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as ChartTooltip,
-  CartesianGrid, Legend, Cell
+  CartesianGrid, Legend, Cell, ReferenceLine
 } from 'recharts';
 
 import AddTargetModal from '../components/AddTargetModal';
@@ -27,18 +27,24 @@ interface MutualFundsProps {
   onViewStock: (scrip: string) => void;
 }
 
-const FUND_CODES = ['H', 'P', 'Q', 'J'];
+const FUND_CODES = ['H', 'P', 'Q', 'J', 'HV', 'HS', 'IC'];
 const FUND_NAME_TO_CODE: Record<string, string> = {
   'HDFC Flexi Cap': 'H',
   'PPFCF': 'P',
   'Quant Flexi Cap': 'Q',
-  'JM Financial': 'J'
+  'JM Financial': 'J',
+  'HDFC Value Funds': 'HV',
+  'HSBC Value Fund': 'HS',
+  'ICICI Value Fund': 'IC'
 };
 const FUND_CODE_TO_NAME: Record<string, string> = {
   'H': 'HDFC Flexi Cap Fund',
   'P': 'Parag Parikh Flexi Cap Fund',
   'Q': 'Quant Flexi Cap Fund',
-  'J': 'JM Flexicap Fund'
+  'J': 'JM Flexicap Fund',
+  'HV': 'HDFC Value Fund',
+  'HS': 'HSBC Value Fund',
+  'IC': 'ICICI Value Fund'
 };
 
 const parseFundInitialWord = (rawName: string | undefined): string => {
@@ -46,6 +52,9 @@ const parseFundInitialWord = (rawName: string | undefined): string => {
   const trimmed = rawName.trim();
   if (trimmed === 'PPFCF' || trimmed.startsWith('Parag Parikh')) {
     return 'Parag';
+  }
+  if (trimmed.startsWith('HDFC Value')) {
+    return 'HDFC Val';
   }
   if (trimmed.startsWith('HDFC')) {
     return 'HDFC';
@@ -55,6 +64,12 @@ const parseFundInitialWord = (rawName: string | undefined): string => {
   }
   if (trimmed.startsWith('JM')) {
     return 'JM';
+  }
+  if (trimmed.startsWith('HSBC')) {
+    return 'HSBC';
+  }
+  if (trimmed.startsWith('ICICI')) {
+    return 'ICICI';
   }
   return trimmed.split(/\s+/)[0];
 };
@@ -99,6 +114,7 @@ const FILTER_CATEGORIES = [
 const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   const [summary, setSummary] = useState<any>(null);
   const [analytics, setAnalytics] = useState<any[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedFund, setSelectedFund] = useState<string>('ALL');
   const [selectedFilter, setSelectedFilter] = useState<string>('ALL');
   const [searchText, setSearchText] = useState<string>('');
@@ -130,6 +146,7 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
         {
           rows: displayedRows,
           fund_code: selectedFund,
+          category: selectedCategory,
           filter: selectedFilter,
           format: 'excel'
         },
@@ -138,7 +155,7 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      const fileSuffix = selectedFilter !== 'ALL' ? selectedFilter : selectedFund;
+      const fileSuffix = selectedFilter !== 'ALL' ? selectedFilter : `${selectedCategory}_${selectedFund}`;
       link.setAttribute('download', `Mutual_Funds_Holdings_${fileSuffix}.xlsx`);
       document.body.appendChild(link);
       link.click();
@@ -157,10 +174,15 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       const summaryRes = await axios.get('/api/mutual-funds/summary');
       setSummary(summaryRes.data);
 
-      const analyticsRes = await axios.get(`/api/mutual-funds/analytics?fund_code=${selectedFund}`);
+      const analyticsRes = await axios.get('/api/mutual-funds/analytics', {
+        params: {
+          fund_code: selectedFund,
+          category: selectedCategory
+        }
+      });
       setAnalytics(analyticsRes.data);
     } catch (err) {
-      console.error('Error loading mutual fund data:', err);
+      console.error('Failed to load mutual funds data:', err);
     } finally {
       setLoading(false);
     }
@@ -168,7 +190,7 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
 
   useEffect(() => {
     loadData();
-  }, [selectedFund]);
+  }, [selectedFund, selectedCategory]);
 
   // Load history for detail view when a stock is clicked
   const loadStockHistory = async (symbol: string) => {
@@ -463,7 +485,32 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
           );
         }
       },
-      // 2. Mutual Funds Scheme Source (2nd position)
+      // 1.5. MF Category (2nd position)
+      {
+        field: 'mf_category',
+        headerName: 'Category',
+        flex: 1,
+        minWidth: 100,
+        cellRenderer: (p: any) => {
+          const cat = p.value || (['HV', 'HS', 'IC'].includes(p.data?.fund_code) ? 'Value' : 'Flexicap');
+          const isVal = cat === 'Value';
+          return (
+            <Chip
+              label={cat}
+              size="small"
+              sx={{
+                bgcolor: isVal ? 'rgba(192, 132, 252, 0.15)' : 'rgba(56, 189, 248, 0.15)',
+                color: isVal ? '#c084fc' : '#38bdf8',
+                border: `1px solid ${isVal ? 'rgba(192, 132, 252, 0.3)' : 'rgba(56, 189, 248, 0.3)'}`,
+                fontWeight: 700,
+                fontSize: 10,
+                height: 20
+              }}
+            />
+          );
+        }
+      },
+      // 2. Mutual Funds Scheme Source (3rd position)
       {
         field: 'mutual_fund',
         headerName: 'Mutual Funds',
@@ -507,6 +554,62 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
                 {displayText}
               </span>
             </MuiTooltip>
+          );
+        }
+      },
+      // 4. Current Value (if held in Live Holdings)
+      {
+        field: 'current_value',
+        headerName: 'Current Value',
+        headerClass: 'grid-header-right',
+        flex: 1.3,
+        minWidth: 130,
+        type: 'numericColumn',
+        valueGetter: (p: any) => {
+          return p.data?.current_value || 0;
+        },
+        cellRenderer: (p: any) => {
+          const val = p.value || 0;
+          if (!val || val <= 0) {
+            return <span style={{ display: 'block', textAlign: 'right', width: '100%', color: '#64748b' }}>—</span>;
+          }
+          return (
+            <span style={{ display: 'block', textAlign: 'right', width: '100%', color: '#10b981', fontWeight: 700 }}>
+              ₹{Math.round(val).toLocaleString('en-IN')}
+            </span>
+          );
+        }
+      },
+      // 5. Count (dataset-wide scheme appearance count)
+      {
+        field: 'count',
+        headerName: 'Count',
+        headerClass: 'grid-header-center',
+        flex: 0.8,
+        minWidth: 80,
+        cellStyle: { textAlign: 'center' },
+        valueGetter: (p: any) => {
+          return p.data?.count || 1;
+        },
+        cellRenderer: (p: any) => {
+          const val = p.value || 1;
+          return (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+              <Chip
+                label={val}
+                size="small"
+                sx={{
+                  bgcolor: 'rgba(56, 189, 248, 0.15)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.3)',
+                  fontWeight: 800,
+                  fontSize: 11,
+                  height: 22,
+                  minWidth: 28,
+                  borderRadius: '12px'
+                }}
+              />
+            </Box>
           );
         }
       }
@@ -639,10 +742,10 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   const drawerChart1Data = useMemo(() => {
     if (!selectedStock) return [];
     return months.map(m => {
-      const mv = selectedStock.month_values[m];
+      const mv = selectedStock.month_values?.[m];
       return {
         month: m,
-        value: mv ? mv.value_crore : 0
+        value: mv ? Number((mv.value_crore || 0).toFixed(2)) : 0
       };
     });
   }, [selectedStock, months]);
@@ -650,26 +753,43 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
   const drawerChart2Data = useMemo(() => {
     if (!selectedStock) return [];
     return months.map((m, idx) => {
-      const current = selectedStock.month_values[m]?.value_crore ?? 0;
-      const prev = idx > 0 ? (selectedStock.month_values[months[idx - 1]]?.value_crore ?? 0) : 0;
+      const current = selectedStock.month_values?.[m]?.value_crore ?? 0;
+      const prev = idx > 0 ? (selectedStock.month_values?.[months[idx - 1]]?.value_crore ?? 0) : 0;
+      const diff = idx > 0 ? current - prev : 0;
       return {
         month: m,
-        change: idx > 0 ? current - prev : 0
+        change: Number(diff.toFixed(2))
       };
-    }).slice(1); // Exclude the first month as there is no previous month
+    });
   }, [selectedStock, months]);
 
   const drawerChart3Data = useMemo(() => {
     if (!selectedStock || stockHistory.length === 0) return [];
     
     return months.map(m => {
-      const dataPoint: any = { month: m };
-      FUND_CODES.forEach(code => {
-        // Find record in stockHistory matching month m and fund_code code
-        const rec = stockHistory.find(h => h.month === m && h.fund_code === code);
-        dataPoint[code] = rec ? rec.value_crore : 0;
-      });
-      return dataPoint;
+      // Find all history records for month m
+      const monthRecs = stockHistory.filter(h => h.month === m);
+
+      // Sum by category
+      const flexicap = monthRecs
+        .filter(h => {
+          const cat = (h.mf_category || '').toLowerCase();
+          return cat.includes('flexi') || ['H', 'P', 'Q', 'J'].includes(h.fund_code);
+        })
+        .reduce((sum, h) => sum + (h.value_crore || 0), 0);
+
+      const value = monthRecs
+        .filter(h => {
+          const cat = (h.mf_category || '').toLowerCase();
+          return cat.includes('value') || ['HV', 'HS', 'IC'].includes(h.fund_code);
+        })
+        .reduce((sum, h) => sum + (h.value_crore || 0), 0);
+
+      return {
+        month: m,
+        Flexicap: Number(flexicap.toFixed(2)),
+        Value: Number(value.toFixed(2))
+      };
     });
   }, [selectedStock, stockHistory, months]);
 
@@ -729,7 +849,28 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
             Flexible Decision Support & Trend Analysis based on latest month ({latestMonth})
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 2, minWidth: 420 }}>
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', minWidth: 420 }}>
+          {/* Category Selector */}
+          <FormControl size="small" sx={{ width: 160 }}>
+            <InputLabel id="category-select-label">Category</InputLabel>
+            <Select
+              labelId="category-select-label"
+              value={selectedCategory}
+              label="Category"
+              onChange={(e) => {
+                setSelectedCategory(e.target.value);
+                setSelectedFund('ALL');
+                setSelectedFilter('ALL');
+              }}
+              sx={{ borderRadius: 2 }}
+            >
+              <MenuItem value="ALL">All Categories</MenuItem>
+              <MenuItem value="Flexicap">Flexicap</MenuItem>
+              <MenuItem value="Value">Value</MenuItem>
+            </Select>
+          </FormControl>
+
+          {/* Mutual Fund Selector */}
           <FormControl size="small" sx={{ width: 220 }}>
             <InputLabel id="fund-select-label">Mutual Fund</InputLabel>
             <Select
@@ -742,12 +883,14 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
               }}
               sx={{ borderRadius: 2 }}
             >
-              <MenuItem value="ALL">All Mutual Funds</MenuItem>
-              {summary?.available_funds?.map((f: any) => (
-                <MenuItem key={f.code} value={f.code}>
-                  {FUND_CODE_TO_NAME[f.code] || f.name}
-                </MenuItem>
-              ))}
+              <MenuItem value="ALL">All Funds</MenuItem>
+              {summary?.available_funds
+                ?.filter((f: any) => selectedCategory === 'ALL' || f.category === selectedCategory)
+                ?.map((f: any) => (
+                  <MenuItem key={f.code} value={f.code}>
+                    {FUND_CODE_TO_NAME[f.code] || f.name} {f.category ? `(${f.category})` : ''}
+                  </MenuItem>
+                ))}
             </Select>
           </FormControl>
 
@@ -1017,12 +1160,12 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
               {/* Chart 1: Holding Value Over Time */}
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Month-Wise Holding Value (₹ Crore)</Typography>
               <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={drawerChart1Data} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                <BarChart data={drawerChart1Data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                   <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
                   <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
                   <ChartTooltip 
-                    formatter={(v: any) => [`₹${Number(v).toFixed(2)} Cr`, 'Value']} 
+                    formatter={(v: any) => [`₹${Number(v).toFixed(2)} Cr`, 'Holding Value']} 
                     contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
                   />
                   <Bar dataKey="value" fill="#2962ff" radius={[4, 4, 0, 0]} />
@@ -1034,41 +1177,74 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
               {/* Chart 2: MoM Change Value */}
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Month-on-Month Holding Change (₹ Crore)</Typography>
               <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={drawerChart2Data} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                <BarChart data={drawerChart2Data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                   <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                  <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                  <YAxis 
+                    tick={{ fill: '#94a3b8', fontSize: 10 }}
+                    domain={[
+                      (dataMin: number) => (dataMin < 0 ? Math.floor(dataMin * 1.15) : -5),
+                      (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.15) : 5)
+                    ]}
+                  />
+                  <ReferenceLine y={0} stroke="#64748b" strokeWidth={1} strokeDasharray="3 3" />
                   <ChartTooltip 
-                    formatter={(v: any) => [`${v >= 0 ? '+' : ''}₹${Number(v).toFixed(2)} Cr`, 'Change']} 
+                    formatter={(v: any) => [`${Number(v) >= 0 ? '+' : ''}₹${Number(v).toFixed(2)} Cr`, 'MoM Change']} 
                     contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
                   />
-                  <Bar dataKey="change" fill="#10b981" radius={[4, 4, 0, 0]}>
-                    {drawerChart2Data.map((d, i) => (
-                      <Cell key={i} fill={d.change >= 0 ? '#10b981' : '#ef4444'} />
-                    ))}
-                  </Bar>
+                  <Bar 
+                    dataKey="change" 
+                    isAnimationActive={false}
+                    shape={(props: any) => {
+                      const { x, y, width, height, payload } = props;
+                      const val = payload?.change ?? 0;
+                      if (val === 0 && Math.abs(height) < 1) {
+                        return (
+                          <rect
+                            x={x + width * 0.2}
+                            y={y - 1}
+                            width={width * 0.6}
+                            height={2}
+                            fill="#64748b"
+                            rx={1}
+                          />
+                        );
+                      }
+                      const barY = height < 0 ? y + height : y;
+                      const barHeight = Math.max(2, Math.abs(height));
+                      const color = val > 0 ? '#10b981' : val < 0 ? '#ef4444' : '#64748b';
+                      return (
+                        <rect
+                          x={x}
+                          y={barY}
+                          width={width}
+                          height={barHeight}
+                          fill={color}
+                          rx={2}
+                        />
+                      );
+                    }}
+                  />
                 </BarChart>
               </ResponsiveContainer>
 
-              {/* Chart 3: Fund Breakdown Over Time (Grouped/Stacked) */}
-              {selectedFund === 'ALL' && stockHistory.length > 0 && (
+              {/* Chart 3: Category Breakdown Over Time (Flexicap vs Value) */}
+              {stockHistory.length > 0 && (
                 <>
                   <Box sx={{ mb: 3 }} />
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Mutual Fund Stacked Contribution (₹ Crore)</Typography>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Category Stacked Contribution (₹ Crore)</Typography>
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={drawerChart3Data} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}>
+                    <BarChart data={drawerChart3Data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                       <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
                       <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
                       <ChartTooltip 
-                        formatter={(v: any) => [`₹${Number(v).toFixed(2)} Cr`, '']}
+                        formatter={(v: any, name: any) => [`₹${Number(v).toFixed(2)} Cr`, name]}
                         contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
                       />
-                      <Legend wrapperStyle={{ fontSize: 10 }} />
-                      <Bar dataKey="H" name="HDFC Flexi Cap" fill="#2962ff" stackId="a" />
-                      <Bar dataKey="P" name="Parag Parikh" fill="#10b981" stackId="a" />
-                      <Bar dataKey="Q" name="Quant" fill="#f59e0b" stackId="a" />
-                      <Bar dataKey="J" name="JM Flexicap" fill="#8b5cf6" stackId="a" />
+                      <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} />
+                      <Bar dataKey="Flexicap" name="Flexicap" fill="#3b82f6" stackId="category" />
+                      <Bar dataKey="Value" name="Value" fill="#10b981" stackId="category" />
                     </BarChart>
                   </ResponsiveContainer>
                 </>

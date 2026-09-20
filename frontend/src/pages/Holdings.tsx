@@ -164,24 +164,58 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
       flex: 1.1,
       minWidth: 120,
       cellRenderer: (p: any) => {
-        if (!p.value || p.value.length === 0) return <span style={{ color: '#64748b' }}>—</span>;
-        
-        const codes = p.value.map((m: any) => m.fund_code).join('|');
+        const funds = p.value || [];
+        if (funds.length === 0) return <span style={{ color: '#64748b' }}>—</span>;
         
         const FUND_CODE_TO_OFFICIAL_NAME: Record<string, string> = {
           'H': 'HDFC Flexi Cap Fund',
           'P': 'Parag Parikh Flexi Cap Fund',
           'Q': 'Quant Flexi Cap Fund',
-          'J': 'JM Flexicap Fund'
+          'J': 'JM Flexicap Fund',
+          'HV': 'HDFC Value Fund',
+          'HS': 'HSBC Value Fund',
+          'IC': 'ICICI Value Fund'
         };
 
+        const flexiFunds = funds.filter((m: any) => m.mf_category === 'Flexicap' || ['H', 'P', 'Q', 'J'].includes(m.fund_code));
+        const valueFunds = funds.filter((m: any) => m.mf_category === 'Value' || ['HV', 'HS', 'IC'].includes(m.fund_code));
+        
+        const fCount = new Set(flexiFunds.map((m: any) => m.fund_code || m.fund_name)).size;
+        const vCount = new Set(valueFunds.map((m: any) => m.fund_code || m.fund_name)).size;
+        
+        const parts: string[] = [];
+        if (fCount > 0) parts.push(`F${fCount}`);
+        if (vCount > 0) parts.push(`V${vCount}`);
+        const badgeText = p.data?.mf_badge || (parts.length > 0 ? parts.join('|') : '—');
+        
+        if (badgeText === '—' || parts.length === 0) return <span style={{ color: '#64748b' }}>—</span>;
+
         const tooltipContent = (
-          <Box sx={{ p: 0.5 }}>
-            {p.value.map((m: any) => (
-              <Typography key={m.fund_code} variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
-                {m.fund_code} - {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name}
-              </Typography>
-            ))}
+          <Box sx={{ p: 0.5, maxWidth: 300 }}>
+            {fCount > 0 && (
+              <Box sx={{ mb: vCount > 0 ? 1 : 0 }}>
+                <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, color: '#38bdf8' }}>
+                  Flexicap ({fCount}):
+                </Typography>
+                {flexiFunds.map((m: any) => (
+                  <Typography key={m.fund_code} variant="caption" sx={{ display: 'block', pl: 1, color: '#e2e8f0', fontSize: 11 }}>
+                    • {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name} ({m.fund_code})
+                  </Typography>
+                ))}
+              </Box>
+            )}
+            {vCount > 0 && (
+              <Box>
+                <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, color: '#c084fc' }}>
+                  Value ({vCount}):
+                </Typography>
+                {valueFunds.map((m: any) => (
+                  <Typography key={m.fund_code} variant="caption" sx={{ display: 'block', pl: 1, color: '#e2e8f0', fontSize: 11 }}>
+                    • {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name} ({m.fund_code})
+                  </Typography>
+                ))}
+              </Box>
+            )}
           </Box>
         );
 
@@ -190,10 +224,15 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
             <span
               style={{
                 cursor: 'pointer',
-                color: '#8b5cf6',
+                color: '#a78bfa',
                 fontWeight: 700,
-                textDecoration: 'underline',
-                textDecorationStyle: 'dotted'
+                padding: '2px 8px',
+                borderRadius: '4px',
+                background: 'rgba(167, 139, 250, 0.14)',
+                border: '1px solid rgba(167, 139, 250, 0.3)',
+                display: 'inline-block',
+                textAlign: 'center',
+                letterSpacing: '0.5px'
               }}
               onClick={(e) => {
                 setPopoverAnchor(e.currentTarget);
@@ -201,7 +240,7 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
                 setPopoverStock(p.data.script);
               }}
             >
-              {codes}
+              {badgeText}
             </span>
           </MuiTooltip>
         );
@@ -660,8 +699,9 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
           <Table size="small">
             <TableHead>
               <TableRow>
+                <TableCell sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>Category</TableCell>
                 <TableCell sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>Fund</TableCell>
-                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>Holding</TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>Holding (Cr)</TableCell>
                 <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>1M Change</TableCell>
                 <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>2M Change</TableCell>
                 <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>3M Change</TableCell>
@@ -674,11 +714,16 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
                 const FUND_CODE_TO_OFFICIAL_NAME: Record<string, string> = {
                   'H': 'HDFC Flexi Cap',
                   'P': 'Parag Parikh',
-                  'Q': 'Quant',
-                  'J': 'JM Flexicap'
+                  'Q': 'Quant Flexi Cap',
+                  'J': 'JM Flexicap',
+                  'HV': 'HDFC Value',
+                  'HS': 'HSBC Value',
+                  'IC': 'ICICI Value'
                 };
                 const fundDisplayName = FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name;
                 const latestVal = m.latest_value;
+                const category = m.mf_category || (['HV', 'HS', 'IC'].includes(m.fund_code) ? 'Value' : 'Flexicap');
+                const isValue = category === 'Value';
 
                 const renderChangeEl = (change: number, pct: number) => {
                   if (change > 0.0001) {
@@ -705,7 +750,21 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
 
                 return (
                   <TableRow key={m.fund_code}>
-                    <TableCell sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)', fontWeight: 500 }}>
+                    <TableCell sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      <Chip
+                        label={category}
+                        size="small"
+                        sx={{
+                          bgcolor: isValue ? 'rgba(192, 132, 252, 0.15)' : 'rgba(56, 189, 248, 0.15)',
+                          color: isValue ? '#c084fc' : '#38bdf8',
+                          border: `1px solid ${isValue ? 'rgba(192, 132, 252, 0.3)' : 'rgba(56, 189, 248, 0.3)'}`,
+                          fontWeight: 700,
+                          fontSize: 10,
+                          height: 20
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)', fontWeight: 600 }}>
                       {fundDisplayName}
                     </TableCell>
                     <TableCell align="right" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>

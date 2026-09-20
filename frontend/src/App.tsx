@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useDispatch } from 'react-redux';
 import { useAppSelector } from './store';
 import axios from 'axios';
-import { logOut, setCredentials } from './store/authSlice';
+import { logOut } from './store/authSlice';
 import {
   setHoldings,
   setTransactions,
@@ -16,22 +16,22 @@ import {
   addNotifiedTargetId
 } from './store/portfolioSlice';
 
-// Import Pages
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Holdings from './pages/Holdings';
-import Transactions from './pages/Transactions';
-import LIFOSettlement from './pages/LIFOSettlement';
-import Analytics from './pages/Analytics';
-import AuditLogs from './pages/AuditLogs';
-import Settings from './pages/Settings';
-import StockSummary from './pages/StockSummary';
-import OrderBook from './pages/OrderBook';
-import MutualFunds from './pages/MutualFunds';
-import TargetSetting from './pages/TargetSetting';
-import Watchlist from './pages/Watchlist';
-import HoldingAnalysis from './pages/HoldingAnalysis';
-import ExpensesInterest from './pages/ExpensesInterest';
+// Lazy-loaded Pages for code-splitting and instant initial page load
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Holdings = lazy(() => import('./pages/Holdings'));
+const Transactions = lazy(() => import('./pages/Transactions'));
+const LIFOSettlement = lazy(() => import('./pages/LIFOSettlement'));
+const Analytics = lazy(() => import('./pages/Analytics'));
+const AuditLogs = lazy(() => import('./pages/AuditLogs'));
+const Settings = lazy(() => import('./pages/Settings'));
+const StockSummary = lazy(() => import('./pages/StockSummary'));
+const OrderBook = lazy(() => import('./pages/OrderBook'));
+const MutualFunds = lazy(() => import('./pages/MutualFunds'));
+const TargetSetting = lazy(() => import('./pages/TargetSetting'));
+const Watchlist = lazy(() => import('./pages/Watchlist'));
+const HoldingAnalysis = lazy(() => import('./pages/HoldingAnalysis'));
+const ExpensesInterest = lazy(() => import('./pages/ExpensesInterest'));
 
 // Material UI components
 import {
@@ -119,6 +119,26 @@ axios.interceptors.request.use((config) => {
   return config;
 });
 
+// Helper: Check if current time is within Indian Stock Market Hours (Mon-Fri, 9:15 AM - 3:30 PM IST)
+const isIndianMarketHours = (): boolean => {
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+  if (day === 0 || day === 6) return false;
+
+  const totalMinutes = now.getHours() * 60 + now.getMinutes();
+  const marketOpen = 9 * 60 + 15;   // 09:15 AM
+  const marketClose = 15 * 60 + 30; // 03:30 PM (15:30)
+
+  return totalMinutes >= marketOpen && totalMinutes <= marketClose;
+};
+
+// Helper: Format countdown display (e.g. "4m 30s")
+const formatTimerDisplay = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+};
+
 function App() {
   const dispatch = useDispatch();
   const { isAuthenticated, username } = useAppSelector((state) => state.auth);
@@ -129,13 +149,13 @@ function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
 
-  // Refresh tracking
-  const [priceTimer, setPriceTimer] = useState<number>(10);
+  // Market hours & 5-minute price refresh tracking (300 seconds)
+  const [marketOpen, setMarketOpen] = useState<boolean>(isIndianMarketHours());
+  const [priceTimer, setPriceTimer] = useState<number>(300);
   const [triggeredDialog, setTriggeredDialog] = useState<{ open: boolean; items: any[] }>({
     open: false,
     items: [],
   });
-  const [holdingsTimer, setHoldingsTimer] = useState<number>(30);
   const [globalLoading, setGlobalLoading] = useState<boolean>(false);
   const [notification, setNotification] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
     open: false,
@@ -161,46 +181,44 @@ function App() {
     }
   );
 
-  // Fetch all core portfolio data
+  const showToast = useCallback((message: string, severity: 'success' | 'error' | 'info' = 'info') => {
+    setNotification({ open: true, message, severity });
+  }, []);
+
+  // Fetch all core portfolio data in parallel via Promise.all
   const fetchAllData = async (refreshPrices = false) => {
     if (!isAuthenticated) return;
     try {
       setGlobalLoading(true);
 
-      // Fetch holdings
-      const holdingsRes = await axios.get(`/api/holdings?refresh_prices=${refreshPrices}`);
+      const [
+        holdingsRes,
+        txsRes,
+        historyRes,
+        settlementRes,
+        analyticsRes,
+        logsRes,
+        targetsRes,
+        catsRes,
+      ] = await Promise.all([
+        axios.get(`/api/holdings?refresh_prices=${refreshPrices}`),
+        axios.get('/api/transactions'),
+        axios.get('/api/transactions/history'),
+        axios.get('/api/settlement'),
+        axios.get('/api/analytics'),
+        axios.get('/api/logs'),
+        axios.get('/api/targets').catch(() => ({ data: [] })),
+        axios.get('/api/target-categories').catch(() => ({ data: [] })),
+      ]);
+
       dispatch(setHoldings(holdingsRes.data));
-
-      // Fetch transactions
-      const txsRes = await axios.get('/api/transactions');
       dispatch(setTransactions(txsRes.data));
-
-      // Fetch import history
-      const historyRes = await axios.get('/api/transactions/history');
       dispatch(setImportHistory(historyRes.data));
-
-      // Fetch LIFO Settlement
-      const settlementRes = await axios.get('/api/settlement');
       dispatch(setSettlement(settlementRes.data));
-
-      // Fetch Analytics
-      const analyticsRes = await axios.get('/api/analytics');
       dispatch(setAnalytics(analyticsRes.data));
-
-      // Fetch Audit Logs
-      const logsRes = await axios.get('/api/logs');
       dispatch(setAuditLogs(logsRes.data));
-
-      // Fetch Targets & Categories
-      try {
-        const targetsRes = await axios.get('/api/targets');
-        dispatch(setTargets(targetsRes.data));
-        const catsRes = await axios.get('/api/target-categories');
-        dispatch(setTargetCategories(catsRes.data));
-      } catch (tErr) {
-        console.error('Failed to load targets/categories:', tErr);
-      }
-
+      dispatch(setTargets(targetsRes.data));
+      dispatch(setTargetCategories(catsRes.data));
     } catch (err: any) {
       showToast(err.response?.data?.detail || 'Failed to sync data.', 'error');
     } finally {
@@ -208,9 +226,22 @@ function App() {
     }
   };
 
-  const showToast = useCallback((message: string, severity: 'success' | 'error' | 'info' = 'info') => {
-    setNotification({ open: true, message, severity });
-  }, []);
+  // Lightweight background price refresh (does not lock UI or re-fetch transactions/settlement)
+  const refreshLivePricesOnly = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const [holdingsRes, targetsRes] = await Promise.all([
+        axios.get('/api/holdings?refresh_prices=true'),
+        axios.get('/api/targets').catch(() => null),
+      ]);
+      dispatch(setHoldings(holdingsRes.data));
+      if (targetsRes) {
+        dispatch(setTargets(targetsRes.data));
+      }
+    } catch (e) {
+      console.error('Background price sync error:', e);
+    }
+  }, [isAuthenticated, dispatch]);
 
   // Trigger manual transaction folder scan
   const handleScanDirectory = async () => {
@@ -246,24 +277,24 @@ function App() {
 
       if (status === 'AWAITING_OTP') {
         setOtpModal({ open: true, broker, otpText: '' });
-        return false; // Stop polling while waiting for OTP
+        return false;
       }
 
       if (status === 'SUCCESS') {
         showToast(`Holdings scraped successfully for ${broker.toUpperCase()}`, 'success');
         fetchAllData(true);
-        return true; // Stop polling
+        return true;
       }
 
       if (status === 'FAILED') {
         showToast(`Holdings scraping failed for ${broker.toUpperCase()}: ${error}`, 'error');
         fetchAllData(false);
-        return true; // Stop polling
+        return true;
       }
 
-      return false; // Keep polling
+      return false;
     } catch (err) {
-      return true; // Stop polling on error
+      return true;
     }
   };
 
@@ -273,7 +304,6 @@ function App() {
       showToast(`Initiating background browser login and scraper for ${broker.toUpperCase()}...`, 'info');
       await axios.post(`/api/automation/scrape/${broker}`);
 
-      // Start polling status
       const interval = setInterval(async () => {
         const done = await checkScraperStatus(broker);
         if (done) clearInterval(interval);
@@ -291,7 +321,6 @@ function App() {
       showToast(`OTP submitted for ${otpModal.broker.toUpperCase()}. Resuming login...`, 'success');
       setOtpModal({ open: false, broker: '', otpText: '' });
 
-      // Resume polling
       const broker = otpModal.broker;
       const interval = setInterval(async () => {
         const done = await checkScraperStatus(broker);
@@ -303,7 +332,7 @@ function App() {
     }
   };
 
-  // Setup periodic updates and load initial data
+  // Initial load
   useEffect(() => {
     if (isAuthenticated) {
       fetchAllData(true);
@@ -349,32 +378,27 @@ function App() {
     }
   };
 
-  // Timers for live data refreshing
+  // 5-Minute Timer & Market Hours Tracker (9:15 AM - 3:30 PM IST, Mon-Fri)
   useEffect(() => {
     if (!isAuthenticated) return;
 
     const interval = setInterval(() => {
-      // 10s Price refresh
-      setPriceTimer((prev) => {
-        if (prev <= 1) {
-          fetchAllData(true); // Refreshes and grabs live prices
-          return 10;
-        }
-        return prev - 1;
-      });
+      const isMarketOpenNow = isIndianMarketHours();
+      setMarketOpen(isMarketOpenNow);
 
-      // 30s Holdings refresh
-      setHoldingsTimer((prev) => {
-        if (prev <= 1) {
-          // Trigger scans / auto-refreshes if needed
-          return 30;
-        }
-        return prev - 1;
-      });
+      if (isMarketOpenNow) {
+        setPriceTimer((prev) => {
+          if (prev <= 1) {
+            refreshLivePricesOnly(); // Background price sync only
+            return 300; // Reset to 5 minutes
+          }
+          return prev - 1;
+        });
+      }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, refreshLivePricesOnly]);
 
   // Navigate to Stock Summary detailed view
   const handleViewStock = useCallback((scrip: string) => {
@@ -385,55 +409,67 @@ function App() {
   if (!isAuthenticated) {
     return (
       <ThemeProvider theme={darkTheme}>
-        <Login />
+        <Suspense fallback={<Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}><CircularProgress /></Box>}>
+          <Login />
+        </Suspense>
       </ThemeProvider>
     );
   }
 
-  // Render appropriate page component based on activeTab
+  // Render appropriate page component based on activeTab (lazy-loaded with fallback)
   const renderContent = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
-      case 'holdings':
-        return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} showToast={showToast} />;
-      case 'watchlist':
-        return <Watchlist onViewStock={handleViewStock} showToast={showToast} />;
-      case 'targets':
-        return <TargetSetting onViewStock={handleViewStock} />;
-      case 'order-book':
-        return <OrderBook onViewStock={handleViewStock} />;
-      case 'transactions':
-        return <Transactions onViewStock={handleViewStock} />;
-      case 'lifo':
-        return <LIFOSettlement onViewStock={handleViewStock} />;
-      case 'analytics':
-        return <Analytics />;
-      case 'expenses':
-        return <ExpensesInterest />;
-      case 'mutual-funds':
-        return <MutualFunds onViewStock={handleViewStock} />;
-      case 'holding-analysis':
-        return <HoldingAnalysis />;
-      case 'logs':
-        return <AuditLogs />;
-      case 'settings':
-        return <Settings />;
-      case 'stock-summary':
-        return selectedStock ? (
-          <StockSummary 
-            scrip={selectedStock} 
-            onBack={() => setActiveTab('holdings')} 
-            scripList={allHoldings.map((h: any) => h.script).sort((a: string, b: string) => a.localeCompare(b))}
-            onSelectScrip={handleViewStock}
-            onRefreshData={() => fetchAllData(false)}
-          />
-        ) : (
-          <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />
-        );
-      default:
-        return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
-    }
+    return (
+      <Suspense fallback={
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
+          <CircularProgress size={40} />
+        </Box>
+      }>
+        {(() => {
+          switch (activeTab) {
+            case 'dashboard':
+              return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
+            case 'holdings':
+              return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} showToast={showToast} />;
+            case 'watchlist':
+              return <Watchlist onViewStock={handleViewStock} showToast={showToast} />;
+            case 'targets':
+              return <TargetSetting onViewStock={handleViewStock} />;
+            case 'order-book':
+              return <OrderBook onViewStock={handleViewStock} />;
+            case 'transactions':
+              return <Transactions onViewStock={handleViewStock} />;
+            case 'lifo':
+              return <LIFOSettlement onViewStock={handleViewStock} />;
+            case 'analytics':
+              return <Analytics />;
+            case 'expenses':
+              return <ExpensesInterest />;
+            case 'mutual-funds':
+              return <MutualFunds onViewStock={handleViewStock} />;
+            case 'holding-analysis':
+              return <HoldingAnalysis />;
+            case 'logs':
+              return <AuditLogs />;
+            case 'settings':
+              return <Settings />;
+            case 'stock-summary':
+              return selectedStock ? (
+                <StockSummary 
+                  scrip={selectedStock} 
+                  onBack={() => setActiveTab('holdings')} 
+                  scripList={allHoldings.map((h: any) => h.script).sort((a: string, b: string) => a.localeCompare(b))}
+                  onSelectScrip={handleViewStock}
+                  onRefreshData={() => fetchAllData(false)}
+                />
+              ) : (
+                <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />
+              );
+            default:
+              return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
+          }
+        })()}
+      </Suspense>
+    );
   };
 
   return (
@@ -458,16 +494,31 @@ function App() {
             </Typography>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              {/* Active Timers */}
+              {/* Active Market Hours / 5-min Price Refresh Tracker */}
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Badge badgeContent={priceTimer} color="primary" max={99}>
-                  <IconButton disabled size="small" sx={{ color: 'text.secondary' }}>
-                    <RefreshIcon fontSize="small" className="pulse-animation" />
-                  </IconButton>
-                </Badge>
-                <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
-                  Price (LTP) Update in {priceTimer}s
-                </Typography>
+                {marketOpen ? (
+                  <>
+                    <Chip
+                      label="Market Open"
+                      size="small"
+                      sx={{ bgcolor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600, fontSize: 11 }}
+                    />
+                    <Badge badgeContent={Math.ceil(priceTimer / 60) + 'm'} color="primary">
+                      <IconButton disabled size="small" sx={{ color: 'text.secondary' }}>
+                        <RefreshIcon fontSize="small" className="pulse-animation" />
+                      </IconButton>
+                    </Badge>
+                    <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+                      Next Price Sync in {formatTimerDisplay(priceTimer)}
+                    </Typography>
+                  </>
+                ) : (
+                  <Chip
+                    label="Market Closed (9:15–15:30 IST)"
+                    size="small"
+                    sx={{ bgcolor: 'rgba(148, 163, 184, 0.12)', color: 'text.secondary', fontWeight: 500, fontSize: 11 }}
+                  />
+                )}
               </Box>
 
               {/* Sync Directories */}
@@ -481,10 +532,11 @@ function App() {
                 Scan Local Imports
               </Button>
 
-              {/* Sync Holdings */}
+              {/* Sync Holdings Manual Button */}
               <IconButton
                 onClick={() => fetchAllData(true)}
                 disabled={globalLoading}
+                title="Manual Full Sync"
                 sx={{ color: 'primary.main' }}
               >
                 {globalLoading ? <CircularProgress size={24} /> : <RefreshIcon />}

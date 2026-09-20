@@ -1,13 +1,47 @@
 import os
 import re
+import functools
 import pandas as pd
 from typing import Dict, Any
 
+_EXPENSES_CACHE: Dict[str, Any] = {}
+
+def file_mtime_cached(parser_func):
+    """
+    Decorator that caches file parsing results in memory based on (file_path, mtime).
+    If the file has not been modified on disk, returns the cached result in < 1ms.
+    """
+    @functools.wraps(parser_func)
+    def wrapper(file_path: str, *args, **kwargs):
+        if not file_path or not os.path.exists(file_path):
+            return parser_func(file_path, *args, **kwargs)
+        try:
+            if os.path.isdir(file_path):
+                # For directories (e.g. dividend_dir), composite mtime of contained files
+                mtimes = [os.path.getmtime(os.path.join(file_path, f)) for f in os.listdir(file_path)]
+                current_mtime = max(mtimes) if mtimes else 0.0
+            else:
+                current_mtime = os.path.getmtime(file_path)
+        except Exception:
+            current_mtime = 0.0
+
+        cache_key = f"{parser_func.__name__}:{os.path.abspath(file_path)}"
+        if cache_key in _EXPENSES_CACHE:
+            cached_mtime, cached_data = _EXPENSES_CACHE[cache_key]
+            if cached_mtime == current_mtime:
+                return cached_data
+
+        data = parser_func(file_path, *args, **kwargs)
+        _EXPENSES_CACHE[cache_key] = (current_mtime, data)
+        return data
+
+    return wrapper
 
 # ─────────────────────────────────────────────────────────────
 # MStock Parsers
 # ─────────────────────────────────────────────────────────────
 
+@file_mtime_cached
 def parse_mstock_ledger(file_path: str) -> Dict[str, Dict[str, float]]:
     """
     Parse the MStock ledger file to extract monthly aggregates for:
@@ -99,6 +133,7 @@ def parse_mstock_ledger(file_path: str) -> Dict[str, Dict[str, float]]:
         }
     return result
 
+@file_mtime_cached
 def parse_mstock_tax_pnl(file_path: str) -> Dict[str, Dict[str, float]]:
     """
     Parse the MStock Tax P&L file's EQUITY sheet to extract monthly:
@@ -190,6 +225,7 @@ def _parse_posting_date_to_month(date_str: str) -> str | None:
     return None
 
 
+@file_mtime_cached
 def parse_zerodha_other_debits(file_path: str) -> Dict[str, Dict[str, float]]:
     """
     Parse Zerodha taxpnl xlsx — 'Other Debits and Credits' tab — to extract monthly:
@@ -293,6 +329,7 @@ def parse_zerodha_other_debits(file_path: str) -> Dict[str, Dict[str, float]]:
     return result
 
 
+@file_mtime_cached
 def parse_zerodha_tradewise(file_path: str) -> Dict[str, Dict[str, float]]:
     """
     Parse Zerodha taxpnl xlsx — first sheet 'Tradewise Exits from ...' — to extract monthly:
@@ -355,6 +392,7 @@ def parse_zerodha_tradewise(file_path: str) -> Dict[str, Dict[str, float]]:
     return result
 
 
+@file_mtime_cached
 def parse_zerodha_interest_statement(file_path: str) -> Dict[str, float]:
     """
     Parse a Zerodha 'RIM544 - Interest Statement' CSV to derive month-end MTF Loan Position.
@@ -417,6 +455,7 @@ def parse_zerodha_interest_statement(file_path: str) -> Dict[str, float]:
 # Dividend Parser
 # ─────────────────────────────────────────────────────────────
 
+@file_mtime_cached
 def parse_dividend_files(dividend_dir: str) -> Dict[str, Dict[str, float]]:
     """
     Parse all dividend statement CSV/Excel files in dividend_dir for all brokers.

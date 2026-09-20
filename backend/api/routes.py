@@ -562,16 +562,42 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
         })
     mf_matches = mf_engine.get_matching_funds_for_holdings(live_holdings_dicts)
 
-    # For each holding, fetch latest comment details and target setting data
+    # Pre-fetch all comments, targets, and transactions in bulk to eliminate N+1 query overhead
+    scrips = list(set(h.script for h in holdings))
+    
+    # 1. Bulk load comments for active scrips
+    all_comments = db.query(StockComment).filter(StockComment.script.in_(scrips)).order_by(StockComment.comment_date.desc()).all()
+    comments_by_script = {}
+    target_comments_by_script = {}
+    for c in all_comments:
+        if c.script not in comments_by_script:
+            comments_by_script[c.script] = c
+        if c.target_price is not None and c.script not in target_comments_by_script:
+            target_comments_by_script[c.script] = c
+
+    # 2. Bulk load target settings for active scrips
+    all_targets = db.query(TargetSetting).filter(TargetSetting.script.in_(scrips)).order_by(TargetSetting.date.desc()).all()
+    targets_by_script = {}
+    for t in all_targets:
+        if t.script not in targets_by_script:
+            targets_by_script[t.script] = t
+
+    # 3. Bulk load latest transactions for (script, broker)
+    all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).all()
+    latest_tx_by_key = {}
+    for tx in all_txs:
+        key = (tx.script, tx.broker)
+        if key not in latest_tx_by_key:
+            latest_tx_by_key[key] = tx
+
+    today = datetime.now().date()
+    order_map = {"H": 0, "P": 1, "Q": 2, "J": 3, "HV": 4, "HS": 5, "IC": 6}
+
     result = []
     for h in holdings:
-        # Get latest comment
-        latest_comment = db.query(StockComment).filter(StockComment.script == h.script).order_by(StockComment.comment_date.desc()).first()
+        latest_comment = comments_by_script.get(h.script)
+        latest_target_setting = targets_by_script.get(h.script)
         
-        # Get target setting data (latest target for this scrip)
-        latest_target_setting = db.query(TargetSetting).filter(TargetSetting.script == h.script).order_by(TargetSetting.date.desc()).first()
-        
-        # Determine target price: prefer TargetSetting, fallback to StockComment
         tp = None
         target_type = None
         target_category = None
@@ -585,11 +611,9 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
             target_comment = latest_target_setting.comment
             target_bookmark = latest_target_setting.bookmark
         else:
-            # Fallback to comment-based target price
-            latest_target_comment = db.query(StockComment).filter(StockComment.script == h.script, StockComment.target_price.isnot(None)).order_by(StockComment.comment_date.desc()).first()
+            latest_target_comment = target_comments_by_script.get(h.script)
             tp = latest_target_comment.target_price if latest_target_comment else None
         
-        # Compute distance from target using correct formula based on type
         dist = None
         if tp and h.ltp and h.ltp > 0 and tp > 0:
             if target_type == "Buy":
@@ -597,15 +621,9 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
             elif target_type == "Sell":
                 dist = ((h.ltp - tp) / tp) * 100
             else:
-                # Default formula (no type specified) — same as before
                 dist = ((tp - h.ltp) / h.ltp) * 100
             
-        # Get latest transaction for (script, broker)
-        latest_tx = db.query(Transaction).filter(
-            Transaction.script == h.script,
-            Transaction.broker == h.broker
-        ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).first()
-
+        latest_tx = latest_tx_by_key.get((h.script, h.broker))
         dip_pct = None
         latest_tx_date = None
         latest_tx_days = None
@@ -618,23 +636,20 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
             
             latest_tx_date = latest_tx.transaction_date
             if latest_tx_date:
-                today = datetime.now().date()
                 tx_date = latest_tx_date.date()
                 latest_tx_days = (today - tx_date).days
             
             latest_tx_type = "Buy" if latest_tx.buy_sell.upper() == "BUY" else "Sell"
 
-        # Match with mutual funds
         scrip_matches = mf_matches.get(h.script, [])
-        order_map = {"H": 0, "P": 1, "Q": 2, "J": 3}
         scrip_matches.sort(key=lambda x: order_map.get(x["fund_code"], 99))
         
-        # Clean numpy types
         cleaned_matches = []
         for m in scrip_matches:
             cleaned_matches.append({
                 "fund_code": m["fund_code"],
                 "fund_name": m["fund_name"],
+                "mf_category": m.get("mf_category") or ("Value" if m["fund_code"] in ["HV", "HS", "IC"] else "Flexicap"),
                 "latest_value": float(m["latest_value"]) if (pd.notna(m["latest_value"]) and m["latest_value"] == m["latest_value"]) else 0.0,
                 "change_1m": float(m["change_1m"]) if (pd.notna(m["change_1m"]) and m["change_1m"] == m["change_1m"]) else 0.0,
                 "change_1m_pct": float(m["change_1m_pct"]) if (pd.notna(m["change_1m_pct"]) and m["change_1m_pct"] == m["change_1m_pct"]) else 0.0,
@@ -645,6 +660,15 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
                 "trend_3m": m["trend_3m"],
                 "portfolio_signal": m.get("portfolio_signal", "Active")
             })
+
+        flexi_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Flexicap" or m["fund_code"] in ["H", "P", "Q", "J"]))
+        value_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Value" or m["fund_code"] in ["HV", "HS", "IC"]))
+        badge_parts = []
+        if flexi_count > 0:
+            badge_parts.append(f"F{flexi_count}")
+        if value_count > 0:
+            badge_parts.append(f"V{value_count}")
+        mf_badge = "|".join(badge_parts) if badge_parts else None
 
         result.append({
             "id": h.id,
@@ -668,6 +692,9 @@ def get_holdings(refresh_prices: bool = False, current_user: User = Depends(get_
             "latest_tx_date": latest_tx_date,
             "latest_tx_days": latest_tx_days,
             "latest_tx_type": latest_tx_type,
+            "mf_badge": mf_badge,
+            "mf_flexi_count": flexi_count,
+            "mf_value_count": value_count,
             "mutual_funds": cleaned_matches
         })
     return result
@@ -1243,6 +1270,7 @@ def get_mutual_funds_summary(
 @router.get("/mutual-funds/data")
 def get_mutual_funds_data(
     fund_code: Optional[str] = None,
+    category: Optional[str] = None,
     month: Optional[str] = None,
     stock: Optional[str] = None,
     current_user: User = Depends(get_current_user)
@@ -1251,6 +1279,8 @@ def get_mutual_funds_data(
         df = mf_engine.get_raw_dataframe()
         if fund_code and fund_code != "ALL":
             df = df[df["Fund Code"] == fund_code]
+        if category and category != "ALL":
+            df = df[df["MF Category"] == category]
         if month:
             df = df[df["Month"] == month]
         if stock:
@@ -1262,6 +1292,7 @@ def get_mutual_funds_data(
             records.append({
                 "mutual_fund": r.get("Mutual Fund"),
                 "fund_code": r.get("Fund Code"),
+                "mf_category": r.get("MF Category"),
                 "month": r.get("Month"),
                 "isin": r.get("ISIN"),
                 "stock_name": r.get("Stock Name"),
@@ -1279,11 +1310,30 @@ def get_mutual_funds_data(
 @router.get("/mutual-funds/analytics")
 def get_mutual_funds_analytics(
     fund_code: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    category: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     try:
-        analytics = mf_engine.compute_analytics(fund_code)
-        # Handle NaN values to prevent JSON errors
+        analytics = mf_engine.compute_analytics(fund_code, category=category)
+        
+        # Load live holdings to map current holding value
+        live_holdings = db.query(Holding).all()
+        live_by_isin = {}
+        live_by_symbol = {}
+        live_by_name = {}
+
+        for h in live_holdings:
+            val = float(h.current_value) if (h.current_value is not None and h.current_value > 0) else (float(h.quantity) * float(h.ltp or h.avg_price or 0.0))
+            scrip = h.script[:-3] if h.script.endswith("-EQ") else h.script
+            clean_scrip = scrip.strip().upper()
+            live_by_symbol[clean_scrip] = live_by_symbol.get(clean_scrip, 0.0) + val
+            live_by_symbol[h.script.strip().upper()] = live_by_symbol.get(h.script.strip().upper(), 0.0) + val
+            norm_name = mf_engine._normalize_name(clean_scrip)
+            if norm_name:
+                live_by_name[norm_name] = live_by_name.get(norm_name, 0.0) + val
+
+        # Handle NaN values and attach live current_value and count
         for a in analytics:
             if isinstance(a["pct_nav"], list):
                 a["pct_nav"] = [safe_float(v) for v in a["pct_nav"]]
@@ -1301,10 +1351,31 @@ def get_mutual_funds_analytics(
                     return None
                 return str(s)
 
-            a["symbol"] = clean_str(a.get("symbol"))
-            a["isin"] = clean_str(a.get("isin"))
-            a["stock_name"] = clean_str(a.get("stock_name"))
+            sym_str = clean_str(a.get("symbol"))
+            isin_str = clean_str(a.get("isin"))
+            stock_str = clean_str(a.get("stock_name"))
+            
+            a["symbol"] = sym_str
+            a["isin"] = isin_str
+            a["stock_name"] = stock_str
             a["industry"] = clean_str(a.get("industry"))
+            a["mf_category"] = clean_str(a.get("mf_category"))
+            a["count"] = int(a.get("count", 1))
+
+            # Match live holding value
+            sym_key = sym_str.upper().strip() if sym_str else ""
+            isin_key = isin_str.upper().strip() if isin_str else ""
+            name_norm = mf_engine._normalize_name(stock_str or "")
+            
+            matched_live_val = 0.0
+            if isin_key and isin_key in live_by_isin:
+                matched_live_val = live_by_isin[isin_key]
+            elif sym_key and sym_key in live_by_symbol:
+                matched_live_val = live_by_symbol[sym_key]
+            elif name_norm and name_norm in live_by_name:
+                matched_live_val = live_by_name[name_norm]
+                
+            a["current_value"] = round(matched_live_val, 2)
 
             a["latest_quantity"] = check_val(a["latest_quantity"])
             a["latest_value_crore"] = check_val(a["latest_value_crore"])
@@ -1334,6 +1405,7 @@ def get_mutual_funds_analytics(
 class MutualFundsExportRequest(BaseModel):
     rows: Optional[List[dict]] = None
     fund_code: Optional[str] = "ALL"
+    category: Optional[str] = "ALL"
     filter: Optional[str] = "ALL"
     format: Optional[str] = "excel"
 
@@ -1342,8 +1414,10 @@ class MutualFundsExportRequest(BaseModel):
 def export_mutual_funds(
     req: Optional[MutualFundsExportRequest] = None,
     fund_code: Optional[str] = None,
+    category: Optional[str] = None,
     format: str = "excel",
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     try:
         months = mf_engine.get_available_months()
@@ -1351,6 +1425,7 @@ def export_mutual_funds(
         rows_data = None
         export_format = format
         target_fund_code = fund_code
+        target_category = category
 
         if req:
             if req.rows is not None:
@@ -1359,9 +1434,11 @@ def export_mutual_funds(
                 export_format = req.format
             if req.fund_code:
                 target_fund_code = req.fund_code
+            if req.category:
+                target_category = req.category
 
         if rows_data is None:
-            rows_data = mf_engine.compute_analytics(target_fund_code)
+            rows_data = mf_engine.compute_analytics(target_fund_code, category=target_category)
 
         export_data = []
         for a in rows_data:
@@ -1370,8 +1447,11 @@ def export_mutual_funds(
 
             row = {
                 "Portfolio Signal": a.get("portfolio_signal"),
+                "MF Category": a.get("mf_category") or "",
                 "Mutual Fund": mf_name or "",
                 "Symbol": a.get("symbol") or "",
+                "Current Value": round(float(a.get("current_value", 0.0)), 2) if a.get("current_value") else 0.0,
+                "Count": a.get("count", 1),
                 "Stock Name": a.get("stock_name") or "",
                 "Industry": a.get("industry") or "",
                 "Status": a.get("status") or "",
@@ -2515,8 +2595,13 @@ def analytics_expenses_interest(
     )
 
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    expense_dir = os.path.join(root_dir, "Expense")
-    dividend_dir = os.path.join(expense_dir, "Dividend")
+    expense_dir = os.path.join(root_dir, "Manual Data", "Expense")
+    if not os.path.exists(expense_dir):
+        expense_dir = os.path.join(root_dir, "Expense")
+        
+    dividend_dir = os.path.join(root_dir, "Manual Data", "Dividend")
+    if not os.path.exists(dividend_dir):
+        dividend_dir = os.path.join(expense_dir, "Dividend")
 
     # ── Dividend files ─────────────────────────────────────────
     parsed_dividends = parse_dividend_files(dividend_dir)
@@ -2835,7 +2920,7 @@ def initiate_pull_expenses(
         raise HTTPException(status_code=400, detail="Invalid broker. Supported: mstock, mstock_ka")
         
     root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    expense_dir = os.path.join(root_dir, "Expense")
+    expense_dir = os.path.join(root_dir, "Manual Data", "Expense")
     os.makedirs(expense_dir, exist_ok=True)
     
     is_ka = (broker == "mstock_ka")
@@ -3209,35 +3294,49 @@ def get_holdings_analysis(
     # Fetch/caching metadata
     metadata_map = get_or_fetch_stock_metadata(db, scrips, force_refresh=force_refresh)
     
-    # Load Excel metadata mapping
+    # Load Excel metadata mapping with in-memory mtime caching
     excel_map = {}
-    excel_path = r"C:\My_work_RA\Antigravity\Market Cap & Beta Value.xlsx"
+    excel_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "Market Cap & Beta Value.xlsx")
+    if not os.path.exists(excel_path):
+        excel_path = r"C:\My_work_RA\Antigravity\Market Cap & Beta Value.xlsx"
+
+    global _EXCEL_BETA_CACHE
+    if "_EXCEL_BETA_CACHE" not in globals():
+        _EXCEL_BETA_CACHE = {"mtime": 0.0, "data": {}}
+
     if os.path.exists(excel_path):
         try:
-            def normalize_excel_cat(val) -> str:
-                if pd.isna(val) or not str(val).strip():
+            curr_mtime = os.path.getmtime(excel_path)
+            if _EXCEL_BETA_CACHE["mtime"] == curr_mtime and _EXCEL_BETA_CACHE["data"]:
+                excel_map = _EXCEL_BETA_CACHE["data"]
+            else:
+                def normalize_excel_cat(val) -> str:
+                    if pd.isna(val) or not str(val).strip():
+                        return None
+                    v = str(val).strip().title()
+                    if "Large" in v:
+                        return "Large"
+                    elif "Mid" in v:
+                        return "Mid"
+                    elif "Small" in v:
+                        return "Small"
                     return None
-                v = str(val).strip().title()
-                if "Large" in v:
-                    return "Large"
-                elif "Mid" in v:
-                    return "Mid"
-                elif "Small" in v:
-                    return "Small"
-                return None
 
-            df = pd.read_excel(excel_path)
-            # Standardize columns
-            df.columns = [c.strip() for c in df.columns]
-            for _, row in df.iterrows():
-                symbol = str(row['Script']).strip().upper()
-                excel_map[symbol] = {
-                    'market_cap': float(row['Market Cap in Cr']) * 10_000_000 if not pd.isna(row['Market Cap in Cr']) else 0.0,
-                    'beta': float(row['Beta']) if not pd.isna(row['Beta']) else None,
-                    'pe': float(row['P/E']) if not pd.isna(row['P/E']) else None,
-                    'industry': str(row['Industry']).strip() if not pd.isna(row['Industry']) else None,
-                    'category': normalize_excel_cat(row.get('Category')) if 'Category' in df.columns else None
-                }
+                df = pd.read_excel(excel_path)
+                df.columns = [c.strip() for c in df.columns]
+                parsed_map = {}
+                for _, row in df.iterrows():
+                    symbol = str(row['Script']).strip().upper()
+                    parsed_map[symbol] = {
+                        'market_cap': float(row['Market Cap in Cr']) * 10_000_000 if not pd.isna(row['Market Cap in Cr']) else 0.0,
+                        'beta': float(row['Beta']) if not pd.isna(row['Beta']) else None,
+                        'pe': float(row['P/E']) if not pd.isna(row['P/E']) else None,
+                        'industry': str(row['Industry']).strip() if not pd.isna(row['Industry']) else None,
+                        'category': normalize_excel_cat(row.get('Category')) if 'Category' in df.columns else None
+                    }
+                _EXCEL_BETA_CACHE["mtime"] = curr_mtime
+                _EXCEL_BETA_CACHE["data"] = parsed_map
+                excel_map = parsed_map
         except Exception as e:
             print(f"Error loading Market Cap & Beta Value Excel mapping: {e}")
 
@@ -3785,6 +3884,14 @@ def get_watchlist_section1(
     except Exception as e:
         print(f"Error fetching live prices for section1 watchlist: {e}")
         
+    # Bulk-load all transactions for active holdings
+    all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).all()
+    txs_by_script = {}
+    for t in all_txs:
+        if t.script not in txs_by_script:
+            txs_by_script[t.script] = []
+        txs_by_script[t.script].append(t)
+
     results = []
     for h in holdings:
         script = h.script
@@ -3795,8 +3902,8 @@ def get_watchlist_section1(
         if ltp is None or ltp == 0:
             ltp = h.avg_price
             
-        # Get all transactions for script
-        txs = db.query(Transaction).filter(Transaction.script == script).all()
+        # Get transactions for script from bulk-loaded map
+        txs = txs_by_script.get(script, [])
         
         open_buys = []
         if txs:
@@ -3805,21 +3912,17 @@ def get_watchlist_section1(
             
         if not open_buys:
             if not is_manual:
-                # Skip if no open buys exist and it's not manually watchlisted
                 continue
-            # Fallback for manually added scripts with no open buys or no transactions
             buying_date = None
             buying_price = h.avg_price
             remaining_qty = h.quantity
             is_partial = False
         else:
-            # Pick the most recent open buy transaction (maximum buy_date)
             most_recent_open_buy = max(open_buys, key=lambda x: x["buy_date"])
             buying_date = most_recent_open_buy["buy_date"]
             buying_price = most_recent_open_buy["price"]
             remaining_qty = most_recent_open_buy["qty"]
             
-            # Find the original grouped lot quantity for this open buy to check if it's partially settled
             orig_lot_qty = sum(
                 t.quantity for t in txs 
                 if t.buy_sell.upper() == 'BUY' 
@@ -3878,6 +3981,15 @@ def get_watchlist_section2(
     except Exception as e:
         print(f"Error fetching live prices for section2 watchlist: {e}")
         
+    # Bulk-load latest transactions for all (script, broker) pairs
+    all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).all()
+    latest_tx_map = {}
+    for tx in all_txs:
+        key = (tx.script, tx.broker)
+        if key not in latest_tx_map:
+            latest_tx_map[key] = tx
+
+    today = datetime.now().date()
     movers = []
     for h in holdings:
         if h.quantity <= 0:
@@ -3886,10 +3998,7 @@ def get_watchlist_section2(
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         
-        latest_tx = db.query(Transaction).filter(
-            Transaction.script == h.script,
-            Transaction.broker == h.broker
-        ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).first()
+        latest_tx = latest_tx_map.get((h.script, h.broker))
 
         dip_pct = None
         latest_tx_date = None
@@ -3903,7 +4012,6 @@ def get_watchlist_section2(
             
             latest_tx_date = latest_tx.transaction_date
             if latest_tx_date:
-                today = datetime.now().date()
                 tx_date = latest_tx_date.date()
                 latest_tx_days = (today - tx_date).days
             
@@ -3968,6 +4076,15 @@ def get_watchlist_section3(
     except Exception as e:
         print(f"Error fetching live prices for section3 watchlist: {e}")
         
+    # Bulk-load latest transactions
+    all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).all()
+    latest_tx_map = {}
+    for tx in all_txs:
+        key = (tx.script, tx.broker)
+        if key not in latest_tx_map:
+            latest_tx_map[key] = tx
+
+    today = datetime.now().date()
     movers = []
     for h in holdings:
         if h.quantity <= 0:
@@ -3976,10 +4093,7 @@ def get_watchlist_section3(
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         
-        latest_tx = db.query(Transaction).filter(
-            Transaction.script == h.script,
-            Transaction.broker == h.broker
-        ).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).first()
+        latest_tx = latest_tx_map.get((h.script, h.broker))
 
         dip_pct = None
         latest_tx_date = None
@@ -3993,7 +4107,6 @@ def get_watchlist_section3(
             
             latest_tx_date = latest_tx.transaction_date
             if latest_tx_date:
-                today = datetime.now().date()
                 tx_date = latest_tx_date.date()
                 latest_tx_days = (today - tx_date).days
             

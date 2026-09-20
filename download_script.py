@@ -121,7 +121,7 @@ def run(playwright: Playwright) -> None:
         page.get_by_role("button", name="EXCEL").click()
     download = download_info.value
     
-    expense_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Expense")
+    expense_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Manual Data", "Expense")
     os.makedirs(expense_dir, exist_ok=True)
     
     ledger_path = os.path.join(expense_dir, "MA108170_Ledger_Report (26-27).xlsx")

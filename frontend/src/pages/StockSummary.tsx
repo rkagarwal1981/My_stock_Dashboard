@@ -1207,10 +1207,10 @@ const StockSummary: React.FC<StockSummaryProps> = ({
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    {['Date', 'Broker', 'Type', 'Qty', 'Price', 'Value'].map(h => (
+                    {['Date', 'Broker', 'Type', 'Qty', 'Price', '%age', 'Value'].map(h => (
                       <TableCell
                         key={h}
-                        align={h === 'Price' || h === 'Value' ? 'right' : 'left'}
+                        align={h === 'Price' || h === '%age' || h === 'Value' ? 'right' : 'left'}
                         sx={{ color: 'text.secondary', fontWeight: 600, fontSize: 11, py: 1, bgcolor: '#161824' }}
                       >
                         {h}
@@ -1219,31 +1219,49 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(data.timeline ?? []).map((t: any, i: number) => {
-                    const isTarget = isTargetLot(t);
-                    return (
-                      <TableRow 
-                        key={i} 
-                        sx={{ 
-                          bgcolor: isTarget ? 'rgba(234,179,8,0.15)' : 'transparent',
-                          borderLeft: isTarget ? '4px solid #eab308' : 'none',
-                          '&:hover': { bgcolor: isTarget ? 'rgba(234,179,8,0.25)' : 'rgba(41,98,255,0.05)' } 
-                        }}
-                      >
-                        <TableCell sx={{ fontSize: 12, fontWeight: isTarget ? 700 : 500, color: isTarget ? '#eab308' : 'inherit' }}>
-                          {fmtDate(t.date)}
-                        </TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>{t.broker}</TableCell>
-                      <TableCell>
-                        <Chip label={t.buy_sell} size="small"
-                          sx={{ bgcolor: t.buy_sell === 'BUY' ? '#10b98122' : '#ef444422', color: t.buy_sell === 'BUY' ? '#10b981' : '#ef4444', fontWeight: 700, fontSize: 10 }} />
-                      </TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>{t.quantity}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.price))}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.quantity * t.price))}</TableCell>
-                    </TableRow>
-                  );
-                })}
+                  {(() => {
+                    const timelineList = data.timeline ?? [];
+                    return timelineList.map((t: any, i: number) => {
+                      const isTarget = isTargetLot(t);
+                      const nextTx = i + 1 < timelineList.length ? timelineList[i + 1] : null;
+                      const prevPrice = nextTx?.price;
+                      let pctChangeNode = <span style={{ color: '#64748b' }}>—</span>;
+
+                      if (prevPrice && prevPrice > 0 && typeof t.price === 'number') {
+                        const pct = ((t.price - prevPrice) / prevPrice) * 100;
+                        const isPositive = pct >= 0;
+                        pctChangeNode = (
+                          <span style={{ color: isPositive ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                            {isPositive ? '+' : ''}{pct.toFixed(1)}%
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <TableRow 
+                          key={i} 
+                          sx={{ 
+                            bgcolor: isTarget ? 'rgba(234,179,8,0.15)' : 'transparent',
+                            borderLeft: isTarget ? '4px solid #eab308' : 'none',
+                            '&:hover': { bgcolor: isTarget ? 'rgba(234,179,8,0.25)' : 'rgba(41,98,255,0.05)' } 
+                          }}
+                        >
+                          <TableCell sx={{ fontSize: 12, fontWeight: isTarget ? 700 : 500, color: isTarget ? '#eab308' : 'inherit' }}>
+                            {fmtDate(t.date)}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>{t.broker}</TableCell>
+                          <TableCell>
+                            <Chip label={t.buy_sell} size="small"
+                              sx={{ bgcolor: t.buy_sell === 'BUY' ? '#10b98122' : '#ef444422', color: t.buy_sell === 'BUY' ? '#10b981' : '#ef4444', fontWeight: 700, fontSize: 10 }} />
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>{t.quantity}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.price))}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 12 }}>{pctChangeNode}</TableCell>
+                          <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(t.quantity * t.price))}</TableCell>
+                        </TableRow>
+                      );
+                    });
+                  })()}
                 </TableBody>
               </Table>
               {(data.timeline ?? []).length === 0 && (

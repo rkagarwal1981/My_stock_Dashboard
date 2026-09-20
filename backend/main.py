@@ -12,7 +12,7 @@ from models.executed_order import ExecutedOrder
 from models.target import TargetSetting
 from models.target_category import TargetCategory
 from api.auth import get_password_hash
-from services.importer import scan_and_import_directory, run_trade_pullers
+from services.importer import scan_and_import_directory, run_trade_pullers, run_holdings_pullers
 from models.audit_log import AuditLog
 from models.watchlist import WatchlistAction, WatchlistManualScript
 from models.stock_research import StockNote, StockAttachment
@@ -80,13 +80,14 @@ import threading
 def run_startup_background_tasks():
     db = SessionLocal()
     try:
-        print("Running startup trade sync...")
+        print("Running startup trade & holdings sync...")
         try:
             run_trade_pullers()
+            run_holdings_pullers()
         except Exception as ep:
-            print("Error during startup trade pullers execution:", ep)
+            print("Error during startup pullers execution:", ep)
             
-        print("Running startup directory transaction scan...")
+        print("Running startup directory transaction scan & reconcile...")
         results = scan_and_import_directory(db)
         print("Startup scan completed:", results)
     except Exception as e:
