@@ -1549,6 +1549,15 @@ def get_targets(current_user: User = Depends(get_current_user), db: Session = De
     except Exception as e:
         print(f"Error fetching live prices for targets: {e}")
 
+    # Batch-fetch mutual fund matches for target scrips
+    mf_matches = {}
+    try:
+        mf_matches = mf_engine.get_matching_funds_for_holdings([{"script": s} for s in scrips])
+    except Exception as e:
+        print(f"Error fetching MF matches for targets: {e}")
+
+    order_map = {"H": 0, "P": 1, "Q": 2, "J": 3, "HV": 4, "HS": 5, "IC": 6}
+
     import math
 
     def safe_float(v):
@@ -1584,6 +1593,35 @@ def get_targets(current_user: User = Depends(get_current_user), db: Session = De
             elif t.type == "Sell" and ltp >= t.target_price:
                 is_triggered_live = True
 
+        scrip_matches = mf_matches.get(t.script, [])
+        scrip_matches.sort(key=lambda x: order_map.get(x["fund_code"], 99))
+
+        cleaned_matches = []
+        for m in scrip_matches:
+            cleaned_matches.append({
+                "fund_code": m["fund_code"],
+                "fund_name": m["fund_name"],
+                "mf_category": m.get("mf_category") or ("Value" if m["fund_code"] in ["HV", "HS", "IC"] else "Flexicap"),
+                "latest_value": float(m["latest_value"]) if (pd.notna(m["latest_value"]) and m["latest_value"] == m["latest_value"]) else 0.0,
+                "change_1m": float(m["change_1m"]) if (pd.notna(m["change_1m"]) and m["change_1m"] == m["change_1m"]) else 0.0,
+                "change_1m_pct": float(m["change_1m_pct"]) if (pd.notna(m["change_1m_pct"]) and m["change_1m_pct"] == m["change_1m_pct"]) else 0.0,
+                "change_2m": float(m["change_2m"]) if (pd.notna(m["change_2m"]) and m["change_2m"] == m["change_2m"]) else 0.0,
+                "change_2m_pct": float(m["change_2m_pct"]) if (pd.notna(m["change_2m_pct"]) and m["change_2m_pct"] == m["change_2m_pct"]) else 0.0,
+                "change_3m": float(m["change_3m"]) if (pd.notna(m["change_3m"]) and m["change_3m"] == m["change_3m"]) else 0.0,
+                "change_3m_pct": float(m["change_3m_pct"]) if (pd.notna(m["change_3m_pct"]) and m["change_3m_pct"] == m["change_3m_pct"]) else 0.0,
+                "trend_3m": m["trend_3m"],
+                "portfolio_signal": m.get("portfolio_signal", "Active")
+            })
+
+        flexi_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Flexicap" or m["fund_code"] in ["H", "P", "Q", "J"]))
+        value_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Value" or m["fund_code"] in ["HV", "HS", "IC"]))
+        badge_parts = []
+        if flexi_count > 0:
+            badge_parts.append(f"F{flexi_count}")
+        if value_count > 0:
+            badge_parts.append(f"V{value_count}")
+        mf_badge = "|".join(badge_parts) if badge_parts else None
+
         result.append({
             "id": t.id,
             "date": t.date,
@@ -1598,7 +1636,11 @@ def get_targets(current_user: User = Depends(get_current_user), db: Session = De
             "is_triggered_live": is_triggered_live,
             "bookmark": t.bookmark,
             "created_at": t.created_at,
-            "updated_at": t.updated_at
+            "updated_at": t.updated_at,
+            "mf_badge": mf_badge,
+            "mf_flexi_count": flexi_count,
+            "mf_value_count": value_count,
+            "mutual_funds": cleaned_matches
         })
 
     return result
@@ -3588,6 +3630,84 @@ def analytics_capital_efficiency(
     """
     from services.capital_analytics import compute_capital_efficiency
     return compute_capital_efficiency(db, broker)
+
+
+@router.get("/analytics/stock-value-buckets")
+def analytics_stock_value_buckets(
+    broker: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns stock count and percentage distribution by current holding value buckets.
+    Buckets:
+      - 0 - 50,000
+      - 50,001 - 1,00,000
+      - 1,00,001 - 2,00,000
+      - 2,00,001 - 3,00,000
+      - 3,00,001 - 4,00,000
+      - Above 4 Lacs
+    """
+    query = db.query(Holding)
+    if broker and broker.lower() != "all":
+        query = query.filter(Holding.broker.ilike(broker))
+    query = _apply_analytics_filters(query, Holding)
+    holdings = query.all()
+
+    # Aggregate current value per stock script
+    stock_values: Dict[str, float] = {}
+    for h in holdings:
+        cv = float(h.current_value or (h.quantity * (h.ltp or h.avg_price or 0.0)) or 0.0)
+        if cv <= 0 and (h.quantity or 0) <= 0:
+            continue
+        script = h.script
+        stock_values[script] = stock_values.get(script, 0.0) + cv
+
+    # Only consider stocks with current_value > 0
+    active_stocks = [(script, val) for script, val in stock_values.items() if val > 0]
+    total_stocks = len(active_stocks)
+    total_portfolio_value = sum(val for _, val in active_stocks)
+
+    bucket_defs = [
+        ("0-50K", "0 - 50,000", 0, 50000),
+        ("50K-1L", "50,001 - 1,00,000", 50000, 100000),
+        ("1L-2L", "1,00,001 - 2,00,000", 100000, 200000),
+        ("2L-3L", "2,00,001 - 3,00,000", 200000, 300000),
+        ("3L-4L", "3,00,001 - 4,00,000", 300000, 400000),
+        (">4L", "Above 4 Lacs", 400000, float("inf")),
+    ]
+
+    bins = []
+    for label, full_label, lo, hi in bucket_defs:
+        if hi == float("inf"):
+            matching = [(s, v) for s, v in active_stocks if v > lo]
+        elif lo == 0:
+            matching = [(s, v) for s, v in active_stocks if 0 < v <= hi]
+        else:
+            matching = [(s, v) for s, v in active_stocks if lo < v <= hi]
+
+        count = len(matching)
+        pct = round((count / total_stocks * 100), 2) if total_stocks > 0 else 0.0
+        bucket_val = round(sum(v for _, v in matching), 2)
+        stocks_sample = sorted(matching, key=lambda x: x[1], reverse=True)
+
+        bins.append({
+            "bin_label": label,
+            "full_label": full_label,
+            "count": count,
+            "pct": pct,
+            "total_value": bucket_val,
+            "min_val": lo,
+            "max_val": None if hi == float("inf") else hi,
+            "stocks": [{"script": s, "value": round(v, 2)} for s, v in stocks_sample]
+        })
+
+    return {
+        "bins": bins,
+        "total_stocks": total_stocks,
+        "total_value": round(total_portfolio_value, 2)
+    }
+
 
 
 @router.get("/analytics/tax-drag")

@@ -200,6 +200,25 @@ const AgeingBarLabel = (props: any) => {
   );
 };
 
+let _bucketTotal = 0; // module-level ref for Stock Value Buckets chart
+const BucketBarLabel = (props: any) => {
+  const { x, y, width, height, value } = props;
+  if (!value) return null;
+  const pct = _bucketTotal > 0 ? parseFloat(((value / _bucketTotal) * 100).toFixed(1)) : 0;
+  return (
+    <text
+      x={x + width + 10}
+      y={y + height / 2 + 5}
+      textAnchor="start"
+      fill="rgba(255,255,255,0.90)"
+      fontSize={12}
+      fontWeight={600}
+    >
+      {`${value} | ${pct}%`}
+    </text>
+  );
+};
+
 /** Renders "N%" above each data point on the Return line chart. */
 const ReturnLineLabel = (props: any) => {
   const { x, y, value } = props;
@@ -306,6 +325,10 @@ const Analytics: React.FC = () => {
   // ── Unsettled Txns Report download state ───────────────────────────────────
   const [exportingReport, setExportingReport] = useState(false);
 
+  // ── Stock Value Buckets widget state ───────────────────────────────────────
+  const [bucketData, setBucketData]       = useState<any>({ bins: [], total_stocks: 0, total_value: 0 });
+  const [bucketLoading, setBucketLoading] = useState(true);
+
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
 
@@ -379,6 +402,18 @@ const Analytics: React.FC = () => {
     } catch { setAgeingData({ bins: [], total: 0, total_value: 0 }); } finally { setAgeingLoading(false); }
   }, [brokerParam, monthTo]);
 
+  const fetchStockBuckets = useCallback(async () => {
+    setBucketLoading(true);
+    try {
+      const res = await axios.get('/api/analytics/stock-value-buckets', { params: { broker: brokerParam || undefined } });
+      setBucketData(res.data);
+    } catch {
+      setBucketData({ bins: [], total_stocks: 0, total_value: 0 });
+    } finally {
+      setBucketLoading(false);
+    }
+  }, [brokerParam]);
+
   // ── Download handler for Unsettled Txns Report ────────────────────────────
   const handleDownloadUnsettledReport = async () => {
     try {
@@ -415,6 +450,7 @@ const Analytics: React.FC = () => {
     fetchSector();
     fetchEfficiency();
     fetchUnsettledAgeing();
+    fetchStockBuckets();
   }, [brokerParam]);
 
   useEffect(() => { fetchChurn(); fetchUnsettledAgeing(); }, [monthFrom, monthTo]);
@@ -1029,9 +1065,9 @@ const Analytics: React.FC = () => {
       </Box>
 
       {/* ═══════════════════════════════════════════════════════════════════
-          Row 4 — Monthly Total Volumes and Profit (full width)
+          Row 4 — Monthly Total Volumes and Profit (left) | Stock Value Buckets (right)
       ══════════════════════════════════════════════════════════════════════ */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2, mb: 2 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2, mb: 2 }}>
 
         {/* Widget 7: Monthly Total Volumes and Profit Trend */}
         <ChartCard
@@ -1077,6 +1113,78 @@ const Analytics: React.FC = () => {
             </ResponsiveContainer>
           )}
         </ChartCard>
+
+        {/* Widget 8: Stock Value Buckets */}
+        {(() => {
+          _bucketTotal = bucketData.total_stocks || 0;
+          const bucketColors = ['#06b6d4', '#10b981', '#2962ff', '#8b5cf6', '#f59e0b', '#ef4444'];
+          const bins = bucketData.bins || [];
+
+          return (
+            <ChartCard
+              title="Stock Value Buckets"
+              subtitle="Current value distribution across active holdings"
+              icon={<AnalyticsIcon sx={{ fontSize: 18, color: '#06b6d4' }} />}
+            >
+              {bucketLoading ? <Spinner /> : bins.every((b: any) => b.count === 0) ? (
+                <EmptyState text="No active holding stocks found." />
+              ) : (
+                <>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                    <Chip
+                      label={`${bucketData.total_stocks || 0} stocks`}
+                      size="small"
+                      sx={{ bgcolor: 'rgba(6,182,212,0.12)', color: '#06b6d4', fontSize: 11, fontWeight: 600 }}
+                    />
+                    <Chip
+                      label={`Total: ₹${Number(bucketData.total_value || 0).toLocaleString('en-IN')}`}
+                      size="small"
+                      sx={{ bgcolor: 'rgba(255,255,255,0.06)', color: '#94a3b8', fontSize: 11 }}
+                    />
+                  </Box>
+                  <ResponsiveContainer width="100%" height={255}>
+                    <BarChart data={bins} layout="vertical" margin={{ top: 0, right: 120, left: 10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="bin_label" tick={{ fill: '#94a3b8', fontSize: 12 }} width={60} axisLine={false} tickLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const d = payload[0]?.payload;
+                          const pct = _bucketTotal > 0 ? ((d?.count / _bucketTotal) * 100).toFixed(1) : '0.0';
+                          return (
+                            <Box sx={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 2, p: 1.5, minWidth: 190 }}>
+                              <Typography variant="body2" sx={{ color: '#f8fafc', fontWeight: 700, fontSize: 13, mb: 0.5 }}>
+                                {d?.full_label || d?.bin_label}
+                              </Typography>
+                              <Typography variant="body2" sx={{ color: '#06b6d4', fontSize: 13, fontWeight: 600 }}>
+                                Stocks: {d?.count} ({pct}%)
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mt: 0.5 }}>
+                                Total Value: ₹{Number(d?.total_value || 0).toLocaleString('en-IN')}
+                              </Typography>
+                              {d?.stocks && d.stocks.length > 0 && (
+                                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.5, fontSize: 11 }}>
+                                  Stocks: {d.stocks.slice(0, 4).map((s: any) => s.script).join(', ')}{d.stocks.length > 4 ? ` +${d.stocks.length - 4} more` : ''}
+                                </Typography>
+                              )}
+                            </Box>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="count" name="Stocks" radius={[0, 6, 6, 0]} maxBarSize={22} isAnimationActive={false}>
+                        {bins.map((_: any, i: number) => (
+                          <Cell key={i} fill={bucketColors[i % bucketColors.length]} />
+                        ))}
+                        <LabelList content={<BucketBarLabel />} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </>
+              )}
+            </ChartCard>
+          );
+        })()}
       </Box>
 
 

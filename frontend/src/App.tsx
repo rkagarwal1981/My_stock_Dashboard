@@ -139,6 +139,59 @@ const formatTimerDisplay = (seconds: number): string => {
   return `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
 };
 
+// Isolated Market Status & Countdown Timer Component (prevents whole-app 1-sec re-renders)
+const MarketStatusIndicator: React.FC<{ onSync: () => void; globalLoading?: boolean }> = React.memo(({ onSync }) => {
+  const [marketOpen, setMarketOpen] = useState<boolean>(isIndianMarketHours());
+  const [priceTimer, setPriceTimer] = useState<number>(300);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const isMarketOpenNow = isIndianMarketHours();
+      setMarketOpen(isMarketOpenNow);
+
+      if (isMarketOpenNow) {
+        setPriceTimer((prev) => {
+          if (prev <= 1) {
+            onSync(); // Background price sync only
+            return 300; // Reset to 5 minutes
+          }
+          return prev - 1;
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [onSync]);
+
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      {marketOpen ? (
+        <>
+          <Chip
+            label="Market Open"
+            size="small"
+            sx={{ bgcolor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600, fontSize: 11 }}
+          />
+          <Badge badgeContent={Math.ceil(priceTimer / 60) + 'm'} color="primary">
+            <IconButton disabled size="small" sx={{ color: 'text.secondary' }}>
+              <RefreshIcon fontSize="small" className="pulse-animation" />
+            </IconButton>
+          </Badge>
+          <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+            Next Price Sync in {formatTimerDisplay(priceTimer)}
+          </Typography>
+        </>
+      ) : (
+        <Chip
+          label="Market Closed (9:15–15:30 IST)"
+          size="small"
+          sx={{ bgcolor: 'rgba(148, 163, 184, 0.12)', color: 'text.secondary', fontWeight: 500, fontSize: 11 }}
+        />
+      )}
+    </Box>
+  );
+});
+
 function App() {
   const dispatch = useDispatch();
   const { isAuthenticated, username } = useAppSelector((state) => state.auth);
@@ -149,9 +202,6 @@ function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
 
-  // Market hours & 5-minute price refresh tracking (300 seconds)
-  const [marketOpen, setMarketOpen] = useState<boolean>(isIndianMarketHours());
-  const [priceTimer, setPriceTimer] = useState<number>(300);
   const [triggeredDialog, setTriggeredDialog] = useState<{ open: boolean; items: any[] }>({
     open: false,
     items: [],
@@ -170,16 +220,22 @@ function App() {
     otpText: ''
   });
 
-  // Handle Token Expiry on API requests
-  axios.interceptors.response.use(
-    (response) => response,
-    (error) => {
-      if (error.response && error.response.status === 401) {
-        dispatch(logOut());
+  // Handle Token Expiry on API requests (with cleanup to prevent memory leaks)
+  useEffect(() => {
+    const interceptorId = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response && error.response.status === 401) {
+          dispatch(logOut());
+        }
+        return Promise.reject(error);
       }
-      return Promise.reject(error);
-    }
-  );
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptorId);
+    };
+  }, [dispatch]);
 
   const showToast = useCallback((message: string, severity: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ open: true, message, severity });
@@ -378,28 +434,6 @@ function App() {
     }
   };
 
-  // 5-Minute Timer & Market Hours Tracker (9:15 AM - 3:30 PM IST, Mon-Fri)
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    const interval = setInterval(() => {
-      const isMarketOpenNow = isIndianMarketHours();
-      setMarketOpen(isMarketOpenNow);
-
-      if (isMarketOpenNow) {
-        setPriceTimer((prev) => {
-          if (prev <= 1) {
-            refreshLivePricesOnly(); // Background price sync only
-            return 300; // Reset to 5 minutes
-          }
-          return prev - 1;
-        });
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated, refreshLivePricesOnly]);
-
   // Navigate to Stock Summary detailed view
   const handleViewStock = useCallback((scrip: string) => {
     setSelectedStock(scrip);
@@ -495,31 +529,7 @@ function App() {
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               {/* Active Market Hours / 5-min Price Refresh Tracker */}
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                {marketOpen ? (
-                  <>
-                    <Chip
-                      label="Market Open"
-                      size="small"
-                      sx={{ bgcolor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600, fontSize: 11 }}
-                    />
-                    <Badge badgeContent={Math.ceil(priceTimer / 60) + 'm'} color="primary">
-                      <IconButton disabled size="small" sx={{ color: 'text.secondary' }}>
-                        <RefreshIcon fontSize="small" className="pulse-animation" />
-                      </IconButton>
-                    </Badge>
-                    <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
-                      Next Price Sync in {formatTimerDisplay(priceTimer)}
-                    </Typography>
-                  </>
-                ) : (
-                  <Chip
-                    label="Market Closed (9:15–15:30 IST)"
-                    size="small"
-                    sx={{ bgcolor: 'rgba(148, 163, 184, 0.12)', color: 'text.secondary', fontWeight: 500, fontSize: 11 }}
-                  />
-                )}
-              </Box>
+              <MarketStatusIndicator onSync={refreshLivePricesOnly} />
 
               {/* Sync Directories */}
               <Button
