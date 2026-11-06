@@ -404,7 +404,8 @@ const StockSummary: React.FC<StockSummaryProps> = ({
         sellPrice: item.sellQty > 0 ? (item.sellValue ?? 0) / item.sellQty : 0,
         holdingDays: item.holdingDaysCount > 0 ? (item.holdingDaysSum / item.holdingDaysCount) : null
       }))
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-30);
   }, [data]);
 
   const buyItems = useMemo(() => chartData.filter(d => d.buyQty > 0), [chartData]);
@@ -493,12 +494,35 @@ const StockSummary: React.FC<StockSummaryProps> = ({
     };
   }, [latestTx, data]);
 
+  const nextSettlementInfo = useMemo(() => {
+    if (!data || data.ltp == null) return null;
+    const targetTx = (data.timeline ?? []).find((t: any) => {
+      if (!data?.highlight_date || !t.date) return false;
+      const dateMatch = t.date.split('T')[0] === data.highlight_date.split('T')[0] && t.buy_sell === 'BUY';
+      if (!dateMatch) return false;
+      if (data.highlight_broker && t.broker) {
+        return t.broker.toLowerCase() === data.highlight_broker.toLowerCase();
+      }
+      return true;
+    });
+    const lifoPrice = data.highlight_price ?? targetTx?.price;
+    if (!lifoPrice || lifoPrice <= 0) return null;
+    const ltp = data.ltp || 0;
+    const diff = ltp - lifoPrice;
+    const pct = (diff / lifoPrice) * 100;
+    return {
+      price: lifoPrice,
+      diff,
+      pct
+    };
+  }, [data]);
+
   // ─── Chart label renderers ───────────────────────────────────────────────────
 
   const renderBuyLabel = (props: any) => {
     const { x, y, width, value, index } = props;
     if (!value || value === 0) return null;
-    const item = buyItems[index];
+    const item = chartData[index] || buyItems[index];
     if (!item) return null;
     const buyVal = item.buyValue ?? 0;
     const formattedVal = Math.round(buyVal).toLocaleString('en-IN');
@@ -520,7 +544,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
   const renderSellLabel = (props: any) => {
     const { x, y, width, value, index } = props;
     if (!value || value === 0) return null;
-    const item = sellItems[index];
+    const item = chartData[index] || sellItems[index];
     if (!item) return null;
     const sellVal = item.sellValue ?? 0;
     const formattedVal = Math.round(sellVal).toLocaleString('en-IN');
@@ -632,7 +656,12 @@ const StockSummary: React.FC<StockSummaryProps> = ({
 
   const isTargetLot = (t: any) => {
     if (!data?.highlight_date || !t.date) return false;
-    return t.date.split('T')[0] === data.highlight_date.split('T')[0] && t.buy_sell === 'BUY';
+    const dateMatch = t.date.split('T')[0] === data.highlight_date.split('T')[0] && t.buy_sell === 'BUY';
+    if (!dateMatch) return false;
+    if (data.highlight_broker && t.broker) {
+      return t.broker.toLowerCase() === data.highlight_broker.toLowerCase();
+    }
+    return true;
   };
 
   return (
@@ -840,6 +869,25 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                     No recent transaction info
                   </Typography>
                 )}
+
+                {nextSettlementInfo && (() => {
+                  const diffValFormatted = nextSettlementInfo.diff >= 0
+                    ? `+₹${nextSettlementInfo.diff.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : `-₹${Math.abs(nextSettlementInfo.diff).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                  const pctFormatted = `${nextSettlementInfo.pct >= 0 ? '+' : ''}${nextSettlementInfo.pct.toFixed(2)}%`;
+                  return (
+                    <Typography
+                      sx={{
+                        fontSize: '18px',
+                        fontWeight: 700,
+                        mt: 1,
+                        color: nextSettlementInfo.diff >= 0 ? '#10b981' : '#ef4444'
+                      }}
+                    >
+                      Next settlement | {diffValFormatted} | {pctFormatted}
+                    </Typography>
+                  );
+                })()}
               </Box>
             </CardContent>
           </Card>

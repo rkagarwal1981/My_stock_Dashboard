@@ -788,8 +788,9 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
         
     avg_price = total_cost / total_qty if total_qty > 0 else 0.0
     
-    # Fetch live price
-    ltp = avg_price
+    # Fetch live price (fallback to Holding.ltp, then avg_price)
+    holding_row = db.query(Holding).filter(Holding.script == scrip, Holding.ltp.isnot(None), Holding.ltp > 0).first()
+    ltp = holding_row.ltp if holding_row else avg_price
     if scrip in live_prices and live_prices[scrip]["price"] > 0:
         ltp = live_prices[scrip]["price"]
     
@@ -885,11 +886,39 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
 
     # Calculate highlight date for most recent open buy transaction picked for LIFO Section 1
     highlight_date = None
+    highlight_broker = None
+    highlight_price = None
     if txs:
-        open_buys = [r for r in settlement if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None]
-        if open_buys:
-            most_recent_open_buy = max(open_buys, key=lambda x: x["buy_date"])
+        # Evaluate per-broker most recent open buy and pick the broker with highest gain_pct (lowest buy price)
+        txs_by_broker = {}
+        for t in txs:
+            b_key = (t.broker or "").strip().lower()
+            if b_key not in txs_by_broker:
+                txs_by_broker[b_key] = []
+            txs_by_broker[b_key].append(t)
+
+        best_candidate = None
+        for b_key, b_txs in txs_by_broker.items():
+            b_settlement = compute_lifo_settlement(b_txs)
+            b_open_buys = [
+                r for r in b_settlement
+                if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None
+            ]
+            if b_open_buys:
+                mr_buy = max(b_open_buys, key=lambda x: x["buy_date"])
+                b_price = mr_buy["price"] or 0.0
+                b_qty = mr_buy["qty"] or 0.0
+                b_gain = ((ltp - b_price) / b_price * 100.0) if b_price > 0 else 0.0
+                b_profit = b_qty * (ltp - b_price) if b_price > 0 else 0.0
+                cand_key = (b_gain, b_profit)
+                if best_candidate is None or cand_key > best_candidate[0]:
+                    best_candidate = (cand_key, mr_buy)
+
+        if best_candidate:
+            most_recent_open_buy = best_candidate[1]
             highlight_date = most_recent_open_buy["buy_date"].isoformat() if most_recent_open_buy["buy_date"] else None
+            highlight_broker = most_recent_open_buy.get("broker")
+            highlight_price = most_recent_open_buy.get("price")
 
     # Check action checked (expires in 24 hours)
     action_record = db.query(WatchlistAction).filter(
@@ -911,6 +940,8 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
         "current_quantity": clean_val(total_qty) or 0.0,
         "avg_price": clean_val(avg_price) or 0.0,
         "highlight_date": highlight_date,
+        "highlight_broker": highlight_broker,
+        "highlight_price": clean_val(highlight_price),
         "action_checked": action_checked,
         "current_value": clean_val(current_value) or 0.0,
         "ltp": clean_val(ltp) or 0.0,
@@ -4004,26 +4035,30 @@ def get_watchlist_section1(
     except Exception as e:
         print(f"Error fetching live prices for section1 watchlist: {e}")
         
-    # Bulk-load all transactions for active holdings
+    # Bulk-load all transactions for active holdings, grouped by (script, broker_lower)
     all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).all()
-    txs_by_script = {}
+    txs_by_script_broker = {}
     for t in all_txs:
-        if t.script not in txs_by_script:
-            txs_by_script[t.script] = []
-        txs_by_script[t.script].append(t)
+        key = (t.script, (t.broker or "").strip().lower())
+        if key not in txs_by_script_broker:
+            txs_by_script_broker[key] = []
+        txs_by_script_broker[key].append(t)
 
-    results = []
+    best_by_script = {}
     for h in holdings:
         script = h.script
         is_manual = script in manual_scripts
+        if (h.quantity is None or h.quantity <= 0) and not is_manual:
+            continue
         
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         if ltp is None or ltp == 0:
             ltp = h.avg_price
             
-        # Get transactions for script from bulk-loaded map
-        txs = txs_by_script.get(script, [])
+        # Get transactions for (script, broker) from bulk-loaded map
+        broker_key = (script, (h.broker or "").strip().lower())
+        txs = txs_by_script_broker.get(broker_key, [])
         
         open_buys = []
         if txs:
@@ -4064,9 +4099,10 @@ def get_watchlist_section1(
             
             action_checked, action_type = resolve_watchlist_action(script, 'section1', latest_orders, db)
             
-            results.append({
+            candidate = {
                 "buying_date": buying_date,
                 "script": script,
+                "broker": h.broker,
                 "buying_price": buying_price,
                 "change_in_ltp_pct": change_pct,
                 "ltp": ltp,
@@ -4078,8 +4114,17 @@ def get_watchlist_section1(
                 "action_type": action_type,
                 "tag_type": "MANUAL" if is_manual else "AUTOMATED",
                 "is_partial": is_partial
-            })
+            }
             
+            # Keep only unique stock name, picking the broker with the maximum %age Gain (tie-broken by potential_profit)
+            if script not in best_by_script:
+                best_by_script[script] = candidate
+            else:
+                existing_cand = best_by_script[script]
+                if (candidate["gain_pct"], candidate["potential_profit"]) > (existing_cand["gain_pct"], existing_cand["potential_profit"]):
+                    best_by_script[script] = candidate
+            
+    results = list(best_by_script.values())
     results.sort(key=lambda x: x["gain_pct"], reverse=True)
     return results
 
@@ -4105,12 +4150,12 @@ def get_watchlist_section2(
     all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).all()
     latest_tx_map = {}
     for tx in all_txs:
-        key = (tx.script, tx.broker)
+        key = (tx.script, (tx.broker or "").strip().lower())
         if key not in latest_tx_map:
             latest_tx_map[key] = tx
 
     today = datetime.now().date()
-    movers = []
+    best_by_script = {}
     for h in holdings:
         if h.quantity <= 0:
             continue
@@ -4118,7 +4163,7 @@ def get_watchlist_section2(
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         
-        latest_tx = latest_tx_map.get((h.script, h.broker))
+        latest_tx = latest_tx_map.get((h.script, (h.broker or "").strip().lower()))
 
         dip_pct = None
         latest_tx_date = None
@@ -4143,7 +4188,7 @@ def get_watchlist_section2(
         
         action_checked, action_type = resolve_watchlist_action(script, 'section2', latest_orders, db)
                 
-        movers.append({
+        candidate = {
             "id": h.id,
             "broker": h.broker,
             "script": script,
@@ -4161,7 +4206,11 @@ def get_watchlist_section2(
             "action_checked": action_checked,
             "action_type": action_type,
             "last_updated": h.last_updated
-        })
+        }
+        if script not in best_by_script or (candidate["pnl_pct"], candidate["pnl"]) > (best_by_script[script]["pnl_pct"], best_by_script[script]["pnl"]):
+            best_by_script[script] = candidate
+
+    movers = list(best_by_script.values())
         
     pos_movers = [m for m in movers if m["change_in_ltp_pct"] > 0]
     pos_movers.sort(key=lambda x: x["change_in_ltp_pct"], reverse=True)
@@ -4200,7 +4249,7 @@ def get_watchlist_section3(
     all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).all()
     latest_tx_map = {}
     for tx in all_txs:
-        key = (tx.script, tx.broker)
+        key = (tx.script, (tx.broker or "").strip().lower())
         if key not in latest_tx_map:
             latest_tx_map[key] = tx
 
@@ -4213,7 +4262,7 @@ def get_watchlist_section3(
         ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         
-        latest_tx = latest_tx_map.get((h.script, h.broker))
+        latest_tx = latest_tx_map.get((h.script, (h.broker or "").strip().lower()))
 
         dip_pct = None
         latest_tx_date = None
@@ -4263,6 +4312,14 @@ def get_watchlist_section3(
 
     if tx_type:
         movers = [m for m in movers if m.get("latest_tx_type") and m["latest_tx_type"].lower() == tx_type.lower()]
+
+    # Deduplicate by script, picking the broker with the highest %age Gain (pnl_pct, tie-broken by pnl)
+    best_by_script = {}
+    for m in movers:
+        s = m["script"]
+        if s not in best_by_script or (m["pnl_pct"], m["pnl"]) > (best_by_script[s]["pnl_pct"], best_by_script[s]["pnl"]):
+            best_by_script[s] = m
+    movers = list(best_by_script.values())
 
     pos_movers = sorted(movers, key=lambda x: x["dip_pct"], reverse=True)
     neg_movers = sorted(movers, key=lambda x: x["dip_pct"])
@@ -4579,3 +4636,76 @@ def delete_attachment(
     db.delete(attachment)
     db.commit()
     return {"message": "Attachment deleted."}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# --- F&O Trading (Zerodha - Nifty) Endpoints ---
+# ════════════════════════════════════════════════════════════════════════════
+
+from services.fo_service import (
+    get_nifty_fo_dashboard_data,
+    get_nifty_contract_history,
+    sync_zerodha_fo_console_tradebook,
+)
+
+
+@router.get("/fo/nifty")
+def get_nifty_fo_analysis(
+    refresh: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns live/cached Zerodha Nifty F&O positions divided by PE and CE,
+    expiry-wise Iron Condor balance breakdown, and historical contract catalog.
+    """
+    try:
+        return get_nifty_fo_dashboard_data(refresh=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load Nifty F&O analysis: {str(e)}")
+
+
+@router.get("/fo/nifty/history/{symbol}")
+def get_nifty_fo_instrument_history(
+    symbol: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns historical transactions, daily summary, and Buy/Sell Qty bar chart data
+    for a specific Nifty F&O instrument.
+    """
+    try:
+        return get_nifty_contract_history(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load F&O instrument history: {str(e)}")
+
+
+@router.post("/fo/nifty/sync")
+def sync_nifty_fo_data(
+    sync_tradebook: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Pulls latest Nifty positions and intraday trades from Zerodha Kite,
+    and optionally syncs the Console F&O tradebook Excel.
+    """
+    try:
+        tradebook_synced = False
+        if sync_tradebook:
+            tradebook_synced = sync_zerodha_fo_console_tradebook()
+
+        data = get_nifty_fo_dashboard_data(refresh=True)
+        audit = AuditLog(
+            category="SYNC",
+            description=f"Synced Zerodha Nifty F&O positions (Tradebook sync: {tradebook_synced})."
+        )
+        db.add(audit)
+        db.commit()
+        return {
+            "status": "SUCCESS",
+            "tradebook_synced": tradebook_synced,
+            "data": data,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync Zerodha Nifty F&O data: {str(e)}")
+

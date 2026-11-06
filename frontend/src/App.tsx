@@ -32,6 +32,7 @@ const TargetSetting = lazy(() => import('./pages/TargetSetting'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const HoldingAnalysis = lazy(() => import('./pages/HoldingAnalysis'));
 const ExpensesInterest = lazy(() => import('./pages/ExpensesInterest'));
+const FOTrading = lazy(() => import('./pages/FOTrading'));
 
 // Material UI components
 import {
@@ -81,6 +82,7 @@ import StarIcon from '@mui/icons-material/Star';
 import PieChartIcon from '@mui/icons-material/PieChart';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
+import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
 
 const drawerWidth = 260;
 
@@ -464,6 +466,8 @@ function App() {
               return <Dashboard onViewStock={handleViewStock} onScrape={triggerScrape} />;
             case 'holdings':
               return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} showToast={showToast} />;
+            case 'fo-trading':
+              return <FOTrading showToast={showToast} />;
             case 'watchlist':
               return <Watchlist onViewStock={handleViewStock} showToast={showToast} />;
             case 'targets':
@@ -524,7 +528,11 @@ function App() {
         >
           <Toolbar sx={{ justifyContent: 'space-between' }}>
             <Typography variant="h6" noWrap component="div" sx={{ fontWeight: 600 }}>
-              {activeTab === 'stock-summary' ? `Details: ${selectedStock}` : activeTab.toUpperCase()}
+              {activeTab === 'stock-summary'
+                ? `Details: ${selectedStock}`
+                : activeTab === 'fo-trading'
+                ? 'F&O TRADING (NIFTY - ZERODHA)'
+                : activeTab.toUpperCase()}
             </Typography>
 
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -585,6 +593,7 @@ function App() {
             {[
               { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
               { id: 'holdings', text: 'Live Holdings', icon: <AccountBalanceWalletIcon /> },
+              { id: 'fo-trading', text: 'F&O Trading (Nifty)', icon: <CandlestickChartIcon /> },
               { id: 'holding-analysis', text: 'Holding Analysis', icon: <PieChartIcon /> },
               { id: 'targets', text: 'Target Setting', icon: <TrackChangesIcon /> },
               { id: 'watchlist', text: 'Watchlist', icon: <StarIcon /> },

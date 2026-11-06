@@ -312,6 +312,27 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
             except Exception as e:
                 print(f"[Zerodha Console] Error saving tradebook: {e}")
                 
+            # 5. Also pull Futures & Options (FO) segment tradebook for F&O module
+            try:
+                print("[Zerodha Console] Selecting FO segment for F&O tradebook...")
+                page.locator("select").first.select_option("FO")
+                time.sleep(1)
+                submit_btn = page.locator("button[type='submit'], .btn-blue, button.btn-blue, button.submit, button:has-text('Go'), .submit-btn").first
+                if submit_btn.is_visible():
+                    submit_btn.click()
+                else:
+                    page.keyboard.press("Enter")
+                time.sleep(4)
+                with page.expect_download(timeout=20000) as fo_dl_info:
+                    fo_btn = page.locator("a:has-text('XLSX'), button:has-text('XLSX'), a[title*='xlsx']").first
+                    fo_btn.click()
+                fo_dl = fo_dl_info.value
+                fo_target_path = os.path.join(WORKSPACE_ROOT, "backend", "database", "zerodha_fo_curr_fy.xlsx")
+                fo_dl.save_as(fo_target_path)
+                print(f"[Zerodha Console] FO Tradebook downloaded and saved to {fo_target_path}")
+            except Exception as e_fo:
+                print(f"[Zerodha Console] Warning pulling FO tradebook: {e_fo}")
+
             success = True
             
         except Exception as e:

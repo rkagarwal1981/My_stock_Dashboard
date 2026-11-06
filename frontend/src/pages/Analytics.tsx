@@ -20,20 +20,20 @@ import {
 // ─── Colour palette ───────────────────────────────────────────────────────────
 
 const SECTOR_COLORS: Record<string, string> = {
-  'Financials':             '#2962ff',
+  'Financials': '#2962ff',
   'Information Technology': '#06b6d4',
-  'Energy':                 '#f59e0b',
-  'Automobile':             '#10b981',
-  'FMCG':                   '#8b5cf6',
-  'Pharma':                 '#ec4899',
-  'Metals & Mining':        '#64748b',
-  'Infrastructure':         '#ef4444',
-  'Telecom':                '#0ea5e9',
+  'Energy': '#f59e0b',
+  'Automobile': '#10b981',
+  'FMCG': '#8b5cf6',
+  'Pharma': '#ec4899',
+  'Metals & Mining': '#64748b',
+  'Infrastructure': '#ef4444',
+  'Telecom': '#0ea5e9',
   'Consumer Discretionary': '#a78bfa',
-  'Chemicals':              '#34d399',
-  'Healthcare':             '#fb923c',
-  'Capital Goods':          '#facc15',
-  'Others':                 '#475569',
+  'Chemicals': '#34d399',
+  'Healthcare': '#fb923c',
+  'Capital Goods': '#facc15',
+  'Others': '#475569',
 };
 
 const BROKERS = ['All', 'MStock', 'Mstock_KA', 'Zerodha', 'Dhan'];
@@ -49,14 +49,14 @@ const BROKERS = ['All', 'MStock', 'Mstock_KA', 'Zerodha', 'Dhan'];
 const fmtShort = (v: number): string => {
   const abs = Math.abs(v);
   if (abs >= 100_000) return `${parseFloat((v / 100_000).toFixed(2))}L`;
-  if (abs >= 1_000)   return `${parseFloat((v / 1_000).toFixed(1))}K`;
+  if (abs >= 1_000) return `${parseFloat((v / 1_000).toFixed(1))}K`;
   return String(Math.round(v));
 };
 
 const fmtShortNoDecimals = (v: number): string => {
   const abs = Math.abs(v);
   if (abs >= 100_000) return `${Math.round(v / 100_000)}L`;
-  if (abs >= 1_000)   return `${Math.round(v / 1_000)}K`;
+  if (abs >= 1_000) return `${Math.round(v / 1_000)}K`;
   return String(Math.round(v));
 };
 
@@ -117,15 +117,15 @@ function remapChurnBins(rawBins: any[]): { bin_label: ChurnBin; count: number; t
       target = lbl as ChurnBin;
     } else {
       const l = lbl.toLowerCase();
-      if      (/^(0[-]7|<\s*1\s*w|<\s*7\s*d|same.?week)/i.test(l))  target = '0-7d';
-      else if (/^(8[-]15|1[-]2\s*w)/i.test(l))                        target = '8-15d';
-      else if (/^(16[-]30|2[-]4\s*w|3[-]4\s*w)/i.test(l))            target = '16-30d';
-      else if (/^(1\s*m(?:onth)?(?!\w)|31[-]60)/i.test(l))            target = '1m';
-      else if (/^(2\s*m(?:onth)?(?!\w)|61[-]90)/i.test(l))            target = '2m';
-      else if (/^(3\s*m(?:onth)?(?!\w)|91[-]120)/i.test(l))           target = '3m';
-      else if (/^(4\s*m(?:onth)?(?!\w)|121[-]150)/i.test(l))          target = '4m';
-      else if (/^(5\s*m(?:onth)?(?!\w)|151[-]170)/i.test(l))          target = '5m';
-      else                                                             target = '>6mnth';
+      if (/^(0[-]7|<\s*1\s*w|<\s*7\s*d|same.?week)/i.test(l)) target = '0-7d';
+      else if (/^(8[-]15|1[-]2\s*w)/i.test(l)) target = '8-15d';
+      else if (/^(16[-]30|2[-]4\s*w|3[-]4\s*w)/i.test(l)) target = '16-30d';
+      else if (/^(1\s*m(?:onth)?(?!\w)|31[-]60)/i.test(l)) target = '1m';
+      else if (/^(2\s*m(?:onth)?(?!\w)|61[-]90)/i.test(l)) target = '2m';
+      else if (/^(3\s*m(?:onth)?(?!\w)|91[-]120)/i.test(l)) target = '3m';
+      else if (/^(4\s*m(?:onth)?(?!\w)|121[-]150)/i.test(l)) target = '4m';
+      else if (/^(5\s*m(?:onth)?(?!\w)|151[-]170)/i.test(l)) target = '5m';
+      else target = '>6mnth';
     }
 
     if (target) {
@@ -297,36 +297,36 @@ const Analytics: React.FC = () => {
   const [broker, setBroker] = useState('All');
 
   // ── Per-widget data + loading states ─────────────────────────────────────
-  const [pnlData, setPnlData]         = useState<any[]>([]);
-  const [pnlLoading, setPnlLoading]   = useState(true);
+  const [pnlData, setPnlData] = useState<any[]>([]);
+  const [pnlLoading, setPnlLoading] = useState(true);
 
-  const [churnData, setChurnData]       = useState<any>({ bins: [], total: 0, total_value: 0 });
+  const [churnData, setChurnData] = useState<any>({ bins: [], total: 0, total_value: 0 });
   const [churnLoading, setChurnLoading] = useState(true);
-  const [churnMode, setChurnMode]       = useState<'volume' | 'value'>('volume');
-  
+  const [churnMode, setChurnMode] = useState<'volume' | 'value'>('volume');
+
   // Lifted global month range master filter state
   const [monthFrom, setMonthFrom] = useState<string>(() => localStorage.getItem('monthFrom') || '');
-  const [monthTo,   setMonthTo]   = useState<string>(() => localStorage.getItem('monthTo')   || '');
+  const [monthTo, setMonthTo] = useState<string>(() => localStorage.getItem('monthTo') || '');
 
-  const [returnData, setReturnData]       = useState<any[]>([]);
+  const [returnData, setReturnData] = useState<any[]>([]);
   const [returnLoading, setReturnLoading] = useState(true);
 
-  const [sectorData, setSectorData]       = useState<any>({ sectors: [], total_value: 0 });
+  const [sectorData, setSectorData] = useState<any>({ sectors: [], total_value: 0 });
   const [sectorLoading, setSectorLoading] = useState(true);
 
-  const [effData, setEffData]             = useState<any[]>([]);
-  const [effLoading, setEffLoading]       = useState(true);
+  const [effData, setEffData] = useState<any[]>([]);
+  const [effLoading, setEffLoading] = useState(true);
 
   // ── Unsettled Ageing widget state ─────────────────────────────────────────
-  const [ageingData, setAgeingData]       = useState<any>({ bins: [], total: 0, total_value: 0 });
+  const [ageingData, setAgeingData] = useState<any>({ bins: [], total: 0, total_value: 0 });
   const [ageingLoading, setAgeingLoading] = useState(true);
-  const [ageingMode, setAgeingMode]       = useState<'volume' | 'value'>('volume');
+  const [ageingMode, setAgeingMode] = useState<'volume' | 'value'>('volume');
 
   // ── Unsettled Txns Report download state ───────────────────────────────────
   const [exportingReport, setExportingReport] = useState(false);
 
   // ── Stock Value Buckets widget state ───────────────────────────────────────
-  const [bucketData, setBucketData]       = useState<any>({ bins: [], total_stocks: 0, total_value: 0 });
+  const [bucketData, setBucketData] = useState<any>({ bins: [], total_stocks: 0, total_value: 0 });
   const [bucketLoading, setBucketLoading] = useState(true);
 
 
@@ -346,7 +346,7 @@ const Analytics: React.FC = () => {
     setChurnLoading(true);
     try {
       const params: any = {};
-      if (brokerParam) params.broker    = brokerParam;
+      if (brokerParam) params.broker = brokerParam;
       if (monthFrom) {
         // First day of the selected month
         params.date_from = `${monthFrom}-01`;
@@ -428,7 +428,7 @@ const Analytics: React.FC = () => {
       const link = document.createElement('a');
       link.href = url;
       const now = new Date();
-      const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+      const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
       link.setAttribute('download', `Unsettled_Ageing_Report_${ts}.xlsx`);
       document.body.appendChild(link);
       link.click();
@@ -462,14 +462,14 @@ const Analytics: React.FC = () => {
     const rawMonths: string[] = pnlData.length > 0
       ? pnlData.map((d: any) => d.month as string)
       : (() => {
-          const opts: string[] = [];
-          const now = new Date();
-          for (let i = 23; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-          }
-          return opts;
-        })();
+        const opts: string[] = [];
+        const now = new Date();
+        for (let i = 23; i >= 0; i--) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          opts.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+        }
+        return opts;
+      })();
     const unique = [...new Set(rawMonths)].sort();
     return unique.map(m => ({ value: m, label: fmtMonth(m) }));
   }, [pnlData]);
@@ -478,6 +478,7 @@ const Analytics: React.FC = () => {
     setMonthFrom(val);
     localStorage.setItem('monthFrom', val);
   };
+
   const handleToChange = (val: string) => {
     setMonthTo(val);
     localStorage.setItem('monthTo', val);
@@ -559,10 +560,10 @@ const Analytics: React.FC = () => {
 
   // ── Summary KPIs ──────────────────────────────────────────────────────────
 
-  const totalGains  = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.gains  || 0), 0), [filteredPnl]);
+  const totalGains = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.gains || 0), 0), [filteredPnl]);
   const totalLosses = React.useMemo(() => filteredPnl.reduce((a: number, d: any) => a + (d.losses || 0), 0), [filteredPnl]);
-  const netPnl      = React.useMemo(() => totalGains + totalLosses, [totalGains, totalLosses]);
-  const totalChurn  = churnData.total || 0;
+  const netPnl = React.useMemo(() => totalGains + totalLosses, [totalGains, totalLosses]);
+  const totalChurn = churnData.total || 0;
   const totalChurnValue = churnData.total_value || 0;
   const totalAgeing = ageingData.total || 0;
   const totalAgeingValue = ageingData.total_value || 0;
@@ -657,11 +658,11 @@ const Analytics: React.FC = () => {
       {/* ── KPI Strip ────────────────────────────────────────────────────── */}
       <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>
         {[
-          { label: 'Total Realized Gains',   val: fmt(totalGains),                             color: '#10b981' },
-          { label: 'Total Realized Losses',  val: `-${fmt(Math.abs(totalLosses))}`,            color: '#ef4444' },
-          { label: 'Net Realized P&L',       val: `${netPnl >= 0 ? '+' : ''}${fmt(netPnl)}`,  color: netPnl >= 0 ? '#10b981' : '#ef4444' },
-          { label: 'Total Closed Positions', val: String(totalChurn),                          color: '#2962ff' },
-          { label: 'Portfolio Value',        val: fmt(sectorData.total_value),                 color: '#8b5cf6' },
+          { label: 'Total Realized Gains', val: fmt(totalGains), color: '#10b981' },
+          { label: 'Total Realized Losses', val: `-${fmt(Math.abs(totalLosses))}`, color: '#ef4444' },
+          { label: 'Net Realized P&L', val: `${netPnl >= 0 ? '+' : ''}${fmt(netPnl)}`, color: netPnl >= 0 ? '#10b981' : '#ef4444' },
+          { label: 'Total Closed Positions', val: String(totalChurn), color: '#2962ff' },
+          { label: 'Portfolio Value', val: fmt(sectorData.total_value), color: '#8b5cf6' },
         ].map(k => (
           <Card key={k.label} sx={{ flex: '1 1 160px', background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
             <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>

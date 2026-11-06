@@ -1,21 +1,99 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import {
-  Box, Typography, Card, CardContent, Grid, Button, Divider,
+  Box, Typography, Card, CardContent, Grid, Button,
   CircularProgress, Chip, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Tooltip, Checkbox, Slider, Tabs, Tab, TextField,
-  Radio, RadioGroup, FormControlLabel, FormControl, FormLabel
+  Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
+  TableSortLabel, Menu, MenuItem
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import StarIcon from '@mui/icons-material/Star';
+import FilterListIcon from '@mui/icons-material/FilterList';
 
 interface WatchlistProps {
   onViewStock: (scrip: string) => void;
   showToast?: (message: string, severity: 'success' | 'error' | 'info') => void;
 }
+
+type SortDirection = 'asc' | 'desc';
+type ActionFilterValue = 'all' | 'checked' | 'unchecked';
+
+interface SortState {
+  field: string;
+  dir: SortDirection;
+}
+
+interface ColumnDef {
+  label: string;
+  field: string;
+  type?: 'string' | 'number' | 'date' | 'boolean';
+  isHighlight?: boolean;
+  isAction?: boolean;
+  minWidth?: number;
+  width?: string | number;
+}
+
+const SECTION1_COLUMNS: ColumnDef[] = [
+  { label: 'Broker', field: 'broker', type: 'string' },
+  { label: 'Stock Name', field: 'script', type: 'string', minWidth: 280, width: '24%' },
+  { label: 'Target Lot Buying Price', field: 'buying_price', type: 'number' },
+  { label: 'LTP chg %', field: 'change_in_ltp_pct', type: 'number' },
+  { label: 'LTP', field: 'ltp', type: 'number' },
+  { label: '%age Gain', field: 'gain_pct', type: 'number', isHighlight: true },
+  { label: 'Remaining Lot Qty', field: 'quantity', type: 'number' },
+  { label: 'Remaining Lot Value', field: 'value', type: 'number' },
+  { label: 'Potential Profit (for this lot only)', field: 'potential_profit', type: 'number' },
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
+  { label: 'Options', field: 'tag_type', type: 'string' }
+];
+
+const SECTION2_COLUMNS: ColumnDef[] = [
+  { label: 'Script', field: 'script', type: 'string' },
+  { label: 'Broker', field: 'broker', type: 'string' },
+  { label: 'Qty', field: 'quantity', type: 'number' },
+  { label: 'Avg Price', field: 'avg_price', type: 'number' },
+  { label: 'LTP', field: 'ltp', type: 'number' },
+  { label: 'LTP Chg %', field: 'change_in_ltp_pct', type: 'number', isHighlight: true },
+  { label: 'P&L %', field: 'pnl_pct', type: 'number' },
+  { label: 'Current Value', field: 'current_value', type: 'number' },
+  { label: 'Dip %age', field: 'dip_pct', type: 'number' },
+  { label: 'Date', field: 'latest_tx_date', type: 'date' },
+  { label: '# of Days', field: 'latest_tx_days', type: 'number' },
+  { label: 'Last Tx Type', field: 'latest_tx_type', type: 'string' },
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+];
+
+const SECTION3_COLUMNS: ColumnDef[] = [
+  { label: 'Script', field: 'script', type: 'string' },
+  { label: 'Broker', field: 'broker', type: 'string' },
+  { label: 'Qty', field: 'quantity', type: 'number' },
+  { label: 'Avg Price', field: 'avg_price', type: 'number' },
+  { label: 'LTP', field: 'ltp', type: 'number' },
+  { label: 'LTP Chg %', field: 'change_in_ltp_pct', type: 'number' },
+  { label: 'P&L %', field: 'pnl_pct', type: 'number' },
+  { label: 'Current Value', field: 'current_value', type: 'number' },
+  { label: 'Dip %age', field: 'dip_pct', type: 'number', isHighlight: true },
+  { label: 'Date', field: 'latest_tx_date', type: 'date' },
+  { label: '# of Days', field: 'latest_tx_days', type: 'number' },
+  { label: 'Last Tx Type', field: 'latest_tx_type', type: 'string' },
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+];
+
+const SECTION4_COLUMNS: ColumnDef[] = [
+  { label: 'Stock Name', field: 'script', type: 'string' },
+  { label: 'Broker', field: 'broker', type: 'string' },
+  { label: 'Exit Price (Sell)', field: 'exit_price', type: 'number' },
+  { label: 'Exit Date', field: 'exit_date', type: 'date' },
+  { label: 'Days Since Exit', field: 'days_since_exit', type: 'number' },
+  { label: 'LTP Now', field: 'ltp', type: 'number' },
+  { label: 'Today Chg %', field: 'change_in_ltp_pct', type: 'number' },
+  { label: 'Drop from Exit %', field: 'drop_from_exit_pct', type: 'number', isHighlight: true },
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+];
 
 const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const [activeTab, setActiveTab] = useState(0);
@@ -33,6 +111,176 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const [N, setN] = useState<number>(10);
   const [section3TxTypeFilter, setSection3TxTypeFilter] = useState<'Buy' | 'Sell'>('Buy');
   const [loading, setLoading] = useState(true);
+
+  // Sorting state per table
+  const [sortConfig, setSortConfig] = useState<Record<string, SortState>>({
+    section1: { field: 'gain_pct', dir: 'desc' },
+    section2_top: { field: 'change_in_ltp_pct', dir: 'desc' },
+    section2_bottom: { field: 'change_in_ltp_pct', dir: 'asc' },
+    section3_top: { field: 'dip_pct', dir: 'desc' },
+    section3_bottom: { field: 'dip_pct', dir: 'asc' },
+    section4: { field: 'drop_from_exit_pct', dir: 'asc' }
+  });
+
+  // Action (24h) filter state per table
+  const [actionFilter, setActionFilter] = useState<Record<string, ActionFilterValue>>({
+    section1: 'all',
+    section2_top: 'all',
+    section2_bottom: 'all',
+    section3_top: 'all',
+    section3_bottom: 'all',
+    section4: 'all'
+  });
+
+  // Filter menu anchor state
+  const [filterMenuAnchor, setFilterMenuAnchor] = useState<{ el: HTMLElement | null; tableId: string | null }>({
+    el: null,
+    tableId: null
+  });
+
+  const handleSortClick = (tableId: string, col: ColumnDef) => {
+    setSortConfig(prev => {
+      const current = prev[tableId];
+      if (current && current.field === col.field) {
+        return {
+          ...prev,
+          [tableId]: { field: col.field, dir: current.dir === 'asc' ? 'desc' : 'asc' }
+        };
+      }
+      const defaultDir: SortDirection = col.type === 'string' ? 'asc' : 'desc';
+      return {
+        ...prev,
+        [tableId]: { field: col.field, dir: defaultDir }
+      };
+    });
+  };
+
+  const applyFilterAndSort = (rows: any[], tableId: string, columns: ColumnDef[]) => {
+    const filterVal = actionFilter[tableId] || 'all';
+    const filtered = rows.filter(r => {
+      if (filterVal === 'checked') return Boolean(r.action_checked);
+      if (filterVal === 'unchecked') return !r.action_checked;
+      return true;
+    });
+
+    const sort = sortConfig[tableId];
+    if (!sort) return filtered;
+
+    const colDef = columns.find(c => c.field === sort.field);
+    const colType = colDef?.type || 'number';
+    const mult = sort.dir === 'asc' ? 1 : -1;
+
+    return [...filtered].sort((a, b) => {
+      const va = a[sort.field];
+      const vb = b[sort.field];
+
+      // Always push null / undefined to the bottom
+      const aNull = va === null || va === undefined || va === '';
+      const bNull = vb === null || vb === undefined || vb === '';
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+
+      if (colType === 'date') {
+        const ta = new Date(va).getTime();
+        const tb = new Date(vb).getTime();
+        if (isNaN(ta) && isNaN(tb)) return String(va).localeCompare(String(vb)) * mult;
+        if (isNaN(ta)) return 1;
+        if (isNaN(tb)) return -1;
+        return (ta - tb) * mult;
+      }
+
+      if (colType === 'string') {
+        return String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' }) * mult;
+      }
+
+      if (colType === 'boolean') {
+        return ((va ? 1 : 0) - (vb ? 1 : 0)) * mult;
+      }
+
+      return (Number(va) - Number(vb)) * mult;
+    });
+  };
+
+  const renderTableHeaderCell = (tableId: string, col: ColumnDef, fontSize: number = 11, py: number = 1.5) => {
+    const currentSort = sortConfig[tableId];
+    const isSorted = currentSort?.field === col.field;
+    const sortDir = isSorted ? currentSort.dir : 'asc';
+    const currentActionFilter = actionFilter[tableId] || 'all';
+    const isFilterActive = col.isAction && currentActionFilter !== 'all';
+
+    return (
+      <TableCell
+        key={col.field}
+        sortDirection={isSorted ? sortDir : false}
+        sx={{
+          color: col.isHighlight ? '#FFD700' : 'text.secondary',
+          fontWeight: 700,
+          py,
+          fontSize,
+          borderBottom: '1px solid #2a2e43',
+          whiteSpace: 'nowrap',
+          ...(col.minWidth != null && { minWidth: col.minWidth }),
+          ...(col.width != null && { width: col.width }),
+          ...(col.isHighlight && {
+            borderLeft: '2px solid rgba(255,215,0,0.3)'
+          })
+        }}
+      >
+        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+          <TableSortLabel
+            active={isSorted}
+            direction={isSorted ? sortDir : 'asc'}
+            onClick={() => handleSortClick(tableId, col)}
+            sx={{
+              color: col.isHighlight ? '#FFD700 !important' : 'inherit',
+              '&.Mui-active': {
+                color: col.isHighlight ? '#FFD700 !important' : '#e2e8f0 !important',
+                '& .MuiTableSortLabel-icon': {
+                  color: col.isHighlight ? '#FFD700 !important' : '#2962ff !important'
+                }
+              }
+            }}
+          >
+            {col.isHighlight ? (
+              <>
+                <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
+                {col.label}
+              </>
+            ) : (
+              col.label
+            )}
+          </TableSortLabel>
+
+          {col.isAction && (
+            <Tooltip
+              title={
+                currentActionFilter === 'all'
+                  ? 'Filter Action (24h)'
+                  : `Filtered: ${currentActionFilter === 'checked' ? 'Checked (✓)' : 'Unchecked (☐)'}`
+              }
+            >
+              <IconButton
+                size="small"
+                onClick={e => {
+                  e.stopPropagation();
+                  setFilterMenuAnchor({ el: e.currentTarget, tableId });
+                }}
+                sx={{
+                  p: 0.25,
+                  color: isFilterActive ? '#FFD700' : 'text.secondary',
+                  bgcolor: isFilterActive ? 'rgba(255,215,0,0.12)' : 'transparent',
+                  '&:hover': { color: '#2962ff' }
+                }}
+              >
+                <FilterListIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
+      </TableCell>
+    );
+  };
 
   const fetchSection1 = async () => {
     try {
@@ -159,21 +407,22 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const fmt = (v: number | null) =>
     v != null ? `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—';
 
-  const fmtDate = (v: string) => {
-    if (!v) return '—';
-    if (v === 'Pre-2026 Data' || v === 'Historical') return v;
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? v : d.toLocaleDateString('en-IN');
-  };
+  // Filtered & sorted rows for each table
+  const displaySection1 = applyFilterAndSort(section1Data, 'section1', SECTION1_COLUMNS);
+  const displaySection2Top = applyFilterAndSort(section2Data.top_movers, 'section2_top', SECTION2_COLUMNS);
+  const displaySection2Bottom = applyFilterAndSort(section2Data.bottom_movers, 'section2_bottom', SECTION2_COLUMNS);
+  const displaySection3Top = applyFilterAndSort(section3Data.top_movers, 'section3_top', SECTION3_COLUMNS);
+  const displaySection3Bottom = applyFilterAndSort(section3Data.bottom_movers, 'section3_bottom', SECTION3_COLUMNS);
+  const displaySection4 = applyFilterAndSort(section4Data, 'section4', SECTION4_COLUMNS);
 
-  // Computed Section 1 Aggregates
-  const totalPotentialProfit = section1Data.reduce(
+  // Computed Section 1 Aggregates (reflecting active filter)
+  const totalPotentialProfit = displaySection1.reduce(
     (acc, curr) => acc + (curr.potential_profit || 0),
     0
   );
   const avgGain =
-    section1Data.length > 0
-      ? section1Data.reduce((acc, curr) => acc + (curr.gain_pct || 0), 0) / section1Data.length
+    displaySection1.length > 0
+      ? displaySection1.reduce((acc, curr) => acc + (curr.gain_pct || 0), 0) / displaySection1.length
       : 0;
 
   return (
@@ -195,6 +444,36 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
           <RefreshIcon />
         </IconButton>
       </Box>
+
+      {/* Action (24h) Filter Dropdown Menu */}
+      <Menu
+        anchorEl={filterMenuAnchor.el}
+        open={Boolean(filterMenuAnchor.el)}
+        onClose={() => setFilterMenuAnchor({ el: null, tableId: null })}
+      >
+        {[
+          { val: 'all' as ActionFilterValue, label: 'All Rows' },
+          { val: 'checked' as ActionFilterValue, label: 'Checked (✓ Action Taken)' },
+          { val: 'unchecked' as ActionFilterValue, label: 'Unchecked (☐ Pending)' }
+        ].map(opt => {
+          const activeVal = filterMenuAnchor.tableId ? actionFilter[filterMenuAnchor.tableId] : 'all';
+          return (
+            <MenuItem
+              key={opt.val}
+              selected={activeVal === opt.val}
+              onClick={() => {
+                if (filterMenuAnchor.tableId) {
+                  setActionFilter(prev => ({ ...prev, [filterMenuAnchor.tableId!]: opt.val }));
+                }
+                setFilterMenuAnchor({ el: null, tableId: null });
+              }}
+              sx={{ fontSize: 12, fontWeight: activeVal === opt.val ? 700 : 400 }}
+            >
+              {opt.label}
+            </MenuItem>
+          );
+        })}
+      </Menu>
 
       {/* Tabs */}
       <Tabs
@@ -219,7 +498,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
               {/* Aggregates row */}
               <Grid container spacing={2} sx={{ mb: 3 }}>
                 {[
-                  { label: 'Watchlist Candidates', val: section1Data.length, color: '#2962ff' },
+                  { label: 'Watchlist Candidates', val: displaySection1.length, color: '#2962ff' },
                   {
                     label: 'Total Potential Profit',
                     val: fmt(totalPotentialProfit),
@@ -252,59 +531,41 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                   <Table size="small">
                     <TableHead>
                       <TableRow sx={{ bgcolor: '#161824' }}>
-                        {[
-                          'Target Lot Buying Date',
-                          'Stock Name',
-                          'Target Lot Buying Price',
-                          'LTP chg %',
-                          'LTP',
-                          '%age Gain',
-                          'Remaining Lot Qty',
-                          'Remaining Lot Value',
-                          'Potential Profit (for this lot only)',
-                          'Action (24h)',
-                          'Options'
-                        ].map(col => {
-                          const isHighlight = col === '%age Gain';
-                          return (
-                            <TableCell
-                              key={col}
-                              sx={{
-                                color: isHighlight ? '#FFD700' : 'text.secondary',
-                                fontWeight: 700,
-                                py: 1.5,
-                                fontSize: 11,
-                                borderBottom: '1px solid #2a2e43',
-                                ...(isHighlight && {
-                                  borderLeft: '2px solid rgba(255,215,0,0.3)',
-                                })
-                              }}
-                            >
-                              {isHighlight ? (
-                                <>
-                                  <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
-                                  {col}
-                                </>
-                              ) : col}
-                            </TableCell>
-                          );
-                        })}
+                        {SECTION1_COLUMNS.map(col => renderTableHeaderCell('section1', col, 11, 1.5))}
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {section1Data.length > 0 ? (
-                        section1Data.map((row, i) => {
+                      {displaySection1.length > 0 ? (
+                        displaySection1.map((row, i) => {
                           const isManual = row.tag_type === 'MANUAL';
                           const ltpChg = row.change_in_ltp_pct ?? 0;
                           return (
-                            <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12 }}>
-                                {fmtDate(row.buying_date)}
+                            <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12, whiteSpace: 'nowrap' }}>
+                                <Chip
+                                  label={row.broker || '—'}
+                                  size="small"
+                                  sx={{
+                                    bgcolor: 'rgba(41,98,255,0.12)',
+                                    color: '#93c5fd',
+                                    fontWeight: 600,
+                                    fontSize: 10,
+                                    height: 20
+                                  }}
+                                />
                               </TableCell>
-                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <TableCell
+                                sx={{
+                                  borderBottom: '1px solid #2a2e43',
+                                  fontWeight: 700,
+                                  minWidth: 280,
+                                  width: '24%',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, whiteSpace: 'nowrap' }}>
                                   <span
-                                    style={{ color: '#2962ff', cursor: 'pointer' }}
+                                    style={{ color: '#2962ff', cursor: 'pointer', whiteSpace: 'nowrap' }}
                                     onClick={() => onViewStock(row.script)}
                                   >
                                     {row.script && row.script.endsWith('-EQ')
@@ -414,7 +675,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                       ) : (
                         <TableRow>
                           <TableCell colSpan={11} align="center" sx={{ py: 6, color: 'text.secondary' }}>
-                            No profit booking candidates currently. Manually add scripts from the Live Holdings page.
+                            No matching profit booking candidates currently.
                           </TableCell>
                         </TableRow>
                       )}
@@ -482,41 +743,17 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                     <TrendingUpIcon /> Top {N} Positive Movers
                   </Typography>
                   <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
-                    <CardContent sx={{ p: 0 }}>
+                    <CardContent sx={{ p: 0, overflowX: 'auto' }}>
                       <Table size="small">
                         <TableHead>
                           <TableRow sx={{ bgcolor: '#161824' }}>
-                            {['Script', 'Broker', 'Qty', 'Avg Price', 'LTP', 'LTP Chg %', 'P&L %', 'Current Value', 'Dip %age', 'Date', '# of Days', 'Last Tx Type', 'Action'].map(col => {
-                              const isHighlight = col === 'LTP Chg %';
-                              return (
-                                <TableCell
-                                  key={col}
-                                  sx={{
-                                    color: isHighlight ? '#FFD700' : 'text.secondary',
-                                    fontWeight: 700,
-                                    py: 1.2,
-                                    fontSize: 10,
-                                    borderBottom: '1px solid #2a2e43',
-                                    ...(isHighlight && { borderLeft: '2px solid rgba(255,215,0,0.3)' })
-                                  }}
-                                >
-                                  {isHighlight ? (
-                                    <>
-                                      <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
-                                      LTP Chg %
-                                    </>
-                                  ) : (
-                                    col
-                                  )}
-                                </TableCell>
-                              );
-                            })}
+                            {SECTION2_COLUMNS.map(col => renderTableHeaderCell('section2_top', col, 10, 1.2))}
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {section2Data.top_movers.length > 0 ? (
-                            section2Data.top_movers.map((row, i) => (
-                              <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
+                          {displaySection2Top.length > 0 ? (
+                            displaySection2Top.map((row, i) => (
+                              <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
                                   <span
                                     style={{ color: '#2962ff', cursor: 'pointer' }}
@@ -609,7 +846,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           ) : (
                             <TableRow>
                               <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                                No positive movers.
+                                No matching positive movers.
                               </TableCell>
                             </TableRow>
                           )}
@@ -628,41 +865,17 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                     <TrendingDownIcon /> Top {N} Negative Movers
                   </Typography>
                   <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
-                    <CardContent sx={{ p: 0 }}>
+                    <CardContent sx={{ p: 0, overflowX: 'auto' }}>
                       <Table size="small">
                         <TableHead>
                           <TableRow sx={{ bgcolor: '#161824' }}>
-                            {['Script', 'Broker', 'Qty', 'Avg Price', 'LTP', 'LTP Chg %', 'P&L %', 'Current Value', 'Dip %age', 'Date', '# of Days', 'Last Tx Type', 'Action'].map(col => {
-                              const isHighlight = col === 'LTP Chg %';
-                              return (
-                                <TableCell
-                                  key={col}
-                                  sx={{
-                                    color: isHighlight ? '#FFD700' : 'text.secondary',
-                                    fontWeight: 700,
-                                    py: 1.2,
-                                    fontSize: 10,
-                                    borderBottom: '1px solid #2a2e43',
-                                    ...(isHighlight && { borderLeft: '2px solid rgba(255,215,0,0.3)' })
-                                  }}
-                                >
-                                  {isHighlight ? (
-                                    <>
-                                      <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
-                                      LTP Chg %
-                                    </>
-                                  ) : (
-                                    col
-                                  )}
-                                </TableCell>
-                              );
-                            })}
+                            {SECTION2_COLUMNS.map(col => renderTableHeaderCell('section2_bottom', col, 10, 1.2))}
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {section2Data.bottom_movers.length > 0 ? (
-                            section2Data.bottom_movers.map((row, i) => (
-                              <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
+                          {displaySection2Bottom.length > 0 ? (
+                            displaySection2Bottom.map((row, i) => (
+                              <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
                                   <span
                                     style={{ color: '#2962ff', cursor: 'pointer' }}
@@ -755,7 +968,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           ) : (
                             <TableRow>
                               <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                                No negative movers.
+                                No matching negative movers.
                               </TableCell>
                             </TableRow>
                           )}
@@ -857,31 +1070,17 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                     <TrendingUpIcon /> Top {N} Positive Dips
                   </Typography>
                   <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
-                    <CardContent sx={{ p: 0 }}>
+                    <CardContent sx={{ p: 0, overflowX: 'auto' }}>
                       <Table size="small">
                         <TableHead>
                           <TableRow sx={{ bgcolor: '#161824' }}>
-                            {['Script', 'Broker', 'Qty', 'Avg Price', 'LTP', 'LTP Chg %', 'P&L %', 'Current Value', 'Dip %age', 'Date', '# of Days', 'Last Tx Type', 'Action'].map(col => (
-                              <TableCell
-                                key={col}
-                                sx={{ 
-                                  color: col === 'Dip %age' ? '#FFD700' : 'text.secondary', 
-                                  fontWeight: 700, 
-                                  py: 1.2, 
-                                  fontSize: 10, 
-                                  borderBottom: '1px solid #2a2e43',
-                                  ...(col === 'Dip %age' && { borderLeft: '2px solid rgba(255,215,0,0.3)' })
-                                }}
-                              >
-                                   {col === 'Dip %age' ? (<><span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>Dip %age</>) : col}
-                                 </TableCell>
-                            ))}
+                            {SECTION3_COLUMNS.map(col => renderTableHeaderCell('section3_top', col, 10, 1.2))}
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {section3Data.top_movers.length > 0 ? (
-                            section3Data.top_movers.map((row, i) => (
-                              <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
+                          {displaySection3Top.length > 0 ? (
+                            displaySection3Top.map((row, i) => (
+                              <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
                                   <span
                                     style={{ color: '#2962ff', cursor: 'pointer' }}
@@ -974,7 +1173,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           ) : (
                             <TableRow>
                               <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                                No positive dippers.
+                                No matching positive dippers.
                               </TableCell>
                             </TableRow>
                           )}
@@ -993,31 +1192,17 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                     <TrendingDownIcon /> Top {N} Negative Dips
                   </Typography>
                   <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2 }}>
-                    <CardContent sx={{ p: 0 }}>
+                    <CardContent sx={{ p: 0, overflowX: 'auto' }}>
                       <Table size="small">
                         <TableHead>
                           <TableRow sx={{ bgcolor: '#161824' }}>
-                            {['Script', 'Broker', 'Qty', 'Avg Price', 'LTP', 'LTP Chg %', 'P&L %', 'Current Value', 'Dip %age', 'Date', '# of Days', 'Last Tx Type', 'Action'].map(col => (
-                              <TableCell
-                                key={col}
-                                sx={{ 
-                                  color: col === 'Dip %age' ? '#FFD700' : 'text.secondary', 
-                                  fontWeight: 700, 
-                                  py: 1.2, 
-                                  fontSize: 10, 
-                                  borderBottom: '1px solid #2a2e43',
-                                  ...(col === 'Dip %age' && { borderLeft: '2px solid rgba(255,215,0,0.3)' })
-                                }}
-                              >
-                                   {col === 'Dip %age' ? (<><span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>Dip %age</>) : col}
-                                 </TableCell>
-                            ))}
+                            {SECTION3_COLUMNS.map(col => renderTableHeaderCell('section3_bottom', col, 10, 1.2))}
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {section3Data.bottom_movers.length > 0 ? (
-                            section3Data.bottom_movers.map((row, i) => (
-                              <TableRow key={i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
+                          {displaySection3Bottom.length > 0 ? (
+                            displaySection3Bottom.map((row, i) => (
+                              <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
                                   <span
                                     style={{ color: '#2962ff', cursor: 'pointer' }}
@@ -1110,7 +1295,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           ) : (
                             <TableRow>
                               <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                                No negative dippers.
+                                No matching negative dippers.
                               </TableCell>
                             </TableRow>
                           )}
@@ -1173,12 +1358,12 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
               {/* Summary stat chips */}
               <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>
                 <Chip
-                  label={`${section4Data.length} Re-entry Candidates`}
+                  label={`${displaySection4.length} Re-entry Candidates`}
                   sx={{ bgcolor: 'rgba(245,158,11,0.12)', color: '#f59e0b', fontWeight: 700, fontSize: 12 }}
                 />
-                {section4Data.length > 0 && (
+                {displaySection4.length > 0 && (
                   <Chip
-                    label={`Biggest Drop: ${section4Data[0]?.drop_from_exit_pct?.toFixed(2)}% from exit`}
+                    label={`Biggest Drop: ${displaySection4[0]?.drop_from_exit_pct?.toFixed(2)}% from exit`}
                     sx={{ bgcolor: 'rgba(239,68,68,0.12)', color: '#ef4444', fontWeight: 700, fontSize: 12 }}
                   />
                 )}
@@ -1190,54 +1375,19 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                   <Table size="small">
                     <TableHead>
                       <TableRow sx={{ bgcolor: '#161824' }}>
-                        {[
-                          'Stock Name',
-                          'Broker',
-                          'Exit Price (Sell)',
-                          'Exit Date',
-                          'Days Since Exit',
-                          'LTP Now',
-                          'Today Chg %',
-                          'Drop from Exit %',
-                          'Action (24h)'
-                        ].map(col => {
-                          const isHighlight = col === 'Drop from Exit %';
-                          return (
-                            <TableCell
-                              key={col}
-                              sx={{
-                                color: isHighlight ? '#FFD700' : 'text.secondary',
-                                fontWeight: 700,
-                                py: 1.5,
-                                fontSize: 11,
-                                borderBottom: '1px solid #2a2e43',
-                                ...(isHighlight && {
-                                  borderLeft: '2px solid rgba(255,215,0,0.3)',
-                                })
-                              }}
-                            >
-                              {isHighlight ? (
-                                <>
-                                  <span style={{ fontSize: '130%', lineHeight: 1, marginRight: 3 }}>💡</span>
-                                  Drop from Exit %
-                                </>
-                              ) : col}
-                            </TableCell>
-                          );
-                        })}
+                        {SECTION4_COLUMNS.map(col => renderTableHeaderCell('section4', col, 11, 1.5))}
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {section4Data.length > 0 ? (
-                        section4Data.map((row, i) => {
+                      {displaySection4.length > 0 ? (
+                        displaySection4.map((row, i) => {
                           const drop = row.drop_from_exit_pct ?? 0;
                           const chg = row.change_in_ltp_pct ?? 0;
                           return (
                             <TableRow
-                              key={i}
+                              key={row.script || i}
                               sx={{
                                 '&:hover': { bgcolor: 'rgba(245,158,11,0.04)' },
-                                // Highlight top 3 cheapest re-entries
                                 ...(i < 3 ? { borderLeft: '3px solid #f59e0b' } : {})
                               }}
                             >
@@ -1350,11 +1500,11 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           <TableCell colSpan={9} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                               <Typography variant="body2" sx={{ color: '#f59e0b', fontWeight: 600 }}>
-                                No re-entry candidates found
+                                No matching re-entry candidates found
                               </Typography>
                               <Typography variant="caption" color="text.secondary">
                                 No stocks were fully exited in the last 6 months outside of live holdings,
-                                or no live price data is available.
+                                or no rows match the active filter.
                               </Typography>
                             </Box>
                           </TableCell>
