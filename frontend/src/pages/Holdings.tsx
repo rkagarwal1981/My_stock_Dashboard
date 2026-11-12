@@ -116,9 +116,29 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
     }
   };
 
-  const filteredHoldings = activeTab === 'all'
-    ? allHoldings
-    : allHoldings.filter((h: any) => h.broker?.toLowerCase() === activeTab.toLowerCase());
+  const normalizeScriptKey = (s: any) => {
+    const raw = String(s || '').trim().toUpperCase();
+    return raw.endsWith('-EQ') ? raw.slice(0, -3).trim() : raw;
+  };
+
+  const filteredHoldings = useMemo(() => {
+    const baseRows = activeTab === 'all'
+      ? allHoldings
+      : allHoldings.filter((h: any) => h.broker?.toLowerCase() === activeTab.toLowerCase());
+
+    const counts: Record<string, number> = {};
+    for (const h of baseRows) {
+      const key = normalizeScriptKey(h.script);
+      if (key) {
+        counts[key] = (counts[key] || 0) + 1;
+      }
+    }
+
+    return baseRows.map((h: any) => ({
+      ...h,
+      script_count: counts[normalizeScriptKey(h.script)] || 1,
+    }));
+  }, [allHoldings, activeTab]);
 
   const fmt = (n: any) => {
     if (n == null || isNaN(n)) return '—';
@@ -154,6 +174,35 @@ const Holdings: React.FC<HoldingsProps> = ({ onViewStock, onScrape, showToast })
                 />
               </MuiTooltip>
             )}
+          </span>
+        );
+      }
+    },
+    {
+      field: 'script_count',
+      headerName: 'Count',
+      flex: 0.65,
+      minWidth: 78,
+      filter: 'agNumberColumnFilter',
+      cellRenderer: (p: any) => {
+        const cnt = Number(p.value || 1);
+        const isMultiple = cnt > 1;
+        return (
+          <span
+            style={{
+              display: 'inline-block',
+              minWidth: '24px',
+              textAlign: 'center',
+              padding: '1px 7px',
+              borderRadius: '4px',
+              fontWeight: isMultiple ? 800 : 600,
+              fontSize: '12px',
+              color: isMultiple ? '#fbbf24' : '#94a3b8',
+              background: isMultiple ? 'rgba(245, 158, 11, 0.16)' : 'rgba(148, 163, 184, 0.08)',
+              border: isMultiple ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid rgba(148, 163, 184, 0.15)',
+            }}
+          >
+            {cnt}
           </span>
         );
       }

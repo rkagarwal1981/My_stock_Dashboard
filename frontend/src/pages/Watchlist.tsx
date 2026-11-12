@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, Grid, Button,
   CircularProgress, Chip, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Tooltip, Checkbox, Slider, Tabs, Tab, TextField,
   Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
-  TableSortLabel, Menu, MenuItem
+  TableSortLabel, Menu, MenuItem, Dialog, DialogTitle, DialogContent
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -13,6 +13,11 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import StarIcon from '@mui/icons-material/Star';
 import FilterListIcon from '@mui/icons-material/FilterList';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import DownloadIcon from '@mui/icons-material/Download';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import CameraAltIcon from '@mui/icons-material/CameraAlt';
+import CloseIcon from '@mui/icons-material/Close';
 
 interface WatchlistProps {
   onViewStock: (scrip: string) => void;
@@ -39,7 +44,9 @@ interface ColumnDef {
 
 const SECTION1_COLUMNS: ColumnDef[] = [
   { label: 'Broker', field: 'broker', type: 'string' },
-  { label: 'Stock Name', field: 'script', type: 'string', minWidth: 280, width: '24%' },
+  { label: 'Stock Name', field: 'script', type: 'string', minWidth: 260, width: '20%' },
+  { label: 'Total Market Value', field: 'total_market_value', type: 'number' },
+  { label: 'Lot Value %age', field: 'lot_value_pct', type: 'number' },
   { label: 'Target Lot Buying Price', field: 'buying_price', type: 'number' },
   { label: 'LTP chg %', field: 'change_in_ltp_pct', type: 'number' },
   { label: 'LTP', field: 'ltp', type: 'number' },
@@ -48,7 +55,8 @@ const SECTION1_COLUMNS: ColumnDef[] = [
   { label: 'Remaining Lot Value', field: 'value', type: 'number' },
   { label: 'Potential Profit (for this lot only)', field: 'potential_profit', type: 'number' },
   { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
-  { label: 'Options', field: 'tag_type', type: 'string' }
+  { label: 'Options', field: 'tag_type', type: 'string' },
+  { label: 'Comments', field: 'comment', type: 'string', minWidth: 210 }
 ];
 
 const SECTION2_COLUMNS: ColumnDef[] = [
@@ -111,6 +119,24 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const [N, setN] = useState<number>(10);
   const [section3TxTypeFilter, setSection3TxTypeFilter] = useState<'Buy' | 'Sell'>('Buy');
   const [loading, setLoading] = useState(true);
+  const [copiedAlert, setCopiedAlert] = useState(false);
+  const [exportingSection1, setExportingSection1] = useState(false);
+  const commentSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Screener.in Snapshot Modal & Batch Pre-fetch state
+  const [screenerModalOpen, setScreenerModalOpen] = useState(false);
+  const [screenerLoading, setScreenerLoading] = useState(false);
+  const [screenerError, setScreenerError] = useState<string | null>(null);
+  const [screenerData, setScreenerData] = useState<{
+    symbol: string;
+    screener_url: string;
+    chart_url: string | null;
+    peers_url: string | null;
+    captured_at: string | null;
+    age_days: number | null;
+    status?: string;
+  } | null>(null);
+  const [batchCapturing, setBatchCapturing] = useState(false);
 
   // Sorting state per table
   const [sortConfig, setSortConfig] = useState<Record<string, SortState>>({
@@ -404,6 +430,40 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
     }
   };
 
+  const saveCommentToBackend = async (script: string, commentText: string) => {
+    try {
+      await axios.put('/api/watchlist/comment', {
+        script,
+        comment: commentText
+      });
+    } catch (e) {
+      console.error('Failed to save watchlist comment:', e);
+      if (showToast) {
+        showToast('Failed to save comment.', 'error');
+      }
+    }
+  };
+
+  const handleCommentChange = (script: string, newComment: string) => {
+    setSection1Data(prev =>
+      prev.map(item => (item.script === script ? { ...item, comment: newComment } : item))
+    );
+    if (commentSaveTimers.current[script]) {
+      clearTimeout(commentSaveTimers.current[script]);
+    }
+    commentSaveTimers.current[script] = setTimeout(() => {
+      saveCommentToBackend(script, newComment);
+    }, 800);
+  };
+
+  const handleCommentBlur = (script: string, commentText: string) => {
+    if (commentSaveTimers.current[script]) {
+      clearTimeout(commentSaveTimers.current[script]);
+      delete commentSaveTimers.current[script];
+    }
+    saveCommentToBackend(script, commentText);
+  };
+
   const fmt = (v: number | null) =>
     v != null ? `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—';
 
@@ -414,6 +474,172 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const displaySection3Top = applyFilterAndSort(section3Data.top_movers, 'section3_top', SECTION3_COLUMNS);
   const displaySection3Bottom = applyFilterAndSort(section3Data.bottom_movers, 'section3_bottom', SECTION3_COLUMNS);
   const displaySection4 = applyFilterAndSort(section4Data, 'section4', SECTION4_COLUMNS);
+
+  // TradingView Watchlist string for Section 1 (strips -EQ and any "| Partially Settled" suffix)
+  const section1TradingViewString = useMemo(() => {
+    if (!displaySection1 || displaySection1.length === 0) return '';
+    const rawSymbols = displaySection1
+      .map((r: any) => {
+        let sym = String(r.script || '').split('|')[0].trim();
+        if (sym.toUpperCase().endsWith('-EQ')) {
+          sym = sym.slice(0, -3).trim();
+        }
+        return sym.toUpperCase();
+      })
+      .filter(Boolean);
+    const uniqueSymbols = Array.from(new Set(rawSymbols));
+    return uniqueSymbols.join(', ');
+  }, [displaySection1]);
+
+  const handleCopySection1Watchlist = () => {
+    if (!section1TradingViewString) return;
+    navigator.clipboard.writeText(section1TradingViewString);
+    setCopiedAlert(true);
+    setTimeout(() => setCopiedAlert(false), 2500);
+  };
+
+  const handleExportSection1Excel = async () => {
+    try {
+      setExportingSection1(true);
+      const response = await axios.post(
+        '/api/watchlist/section1/export',
+        { rows: displaySection1 },
+        { responseType: 'blob' }
+      );
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'Watchlist_LIFO_Profit_Booker.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      console.error('Failed to export Section 1 Excel:', err);
+      if (showToast) {
+        showToast('Failed to export Excel.', 'error');
+      }
+    } finally {
+      setExportingSection1(false);
+    }
+  };
+
+  const cleanScreenerSymbol = (rawScript: string) => {
+    let sym = String(rawScript || '').split('|')[0].trim().toUpperCase();
+    if (sym.endsWith('-EQ')) {
+      sym = sym.slice(0, -3).trim();
+    }
+    return sym;
+  };
+
+  const handleOpenScreenerWeb = (rawScript: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return;
+    window.open(`https://www.screener.in/company/${encodeURIComponent(sym)}/`, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleOpenScreenerSnapshot = async (rawScript: string, force: boolean = false, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return;
+
+    setScreenerModalOpen(true);
+    setScreenerLoading(true);
+    setScreenerError(null);
+    if (!force || !screenerData || screenerData.symbol !== sym) {
+      setScreenerData({
+        symbol: sym,
+        screener_url: `https://www.screener.in/company/${sym}/`,
+        chart_url: null,
+        peers_url: null,
+        captured_at: null,
+        age_days: null
+      });
+    }
+
+    try {
+      const res = await axios.get(`/api/watchlist/screener/${encodeURIComponent(sym)}?force=${force}`);
+      setScreenerData(res.data);
+      if (force && showToast) {
+        showToast(`Refreshed Screener.in snapshots for ${sym}.`, 'success');
+      }
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || `Failed to load Screener.in snapshot for ${sym}.`;
+      setScreenerError(detail);
+    } finally {
+      setScreenerLoading(false);
+    }
+  };
+
+  const handleBatchCaptureScreener = async () => {
+    if (!displaySection1 || displaySection1.length === 0) return;
+    const scripts = displaySection1.map(r => cleanScreenerSymbol(r.script)).filter(Boolean);
+    try {
+      setBatchCapturing(true);
+      if (showToast) {
+        showToast(`Checking/capturing Screener.in snapshots for ${scripts.length} stocks...`, 'info');
+      }
+      const res = await axios.post('/api/watchlist/screener/batch', {
+        scripts,
+        force: false
+      });
+      const { captured_count = 0, cached_count = 0 } = res.data || {};
+      if (showToast) {
+        showToast(
+          `Screener snapshots ready: ${captured_count} newly captured, ${cached_count} already cached (valid 90d).`,
+          'success'
+        );
+      }
+    } catch (err) {
+      console.error('Failed batch Screener capture:', err);
+      if (showToast) {
+        showToast('Failed to batch-capture Screener snapshots.', 'error');
+      }
+    } finally {
+      setBatchCapturing(false);
+    }
+  };
+
+  const renderScreenerActions = (rawScript: string) => {
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return null;
+    return (
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.3, ml: 0.5 }}>
+        <Tooltip title={`View ${sym} Screener Snapshot (PE/EPS Chart & Peers — Cached 90d)`}>
+          <IconButton
+            size="small"
+            onClick={e => handleOpenScreenerSnapshot(sym, false, e)}
+            sx={{
+              p: 0.35,
+              color: '#38bdf8',
+              bgcolor: 'rgba(56,189,248,0.1)',
+              border: '1px solid rgba(56,189,248,0.25)',
+              borderRadius: 1,
+              '&:hover': { bgcolor: 'rgba(56,189,248,0.22)', color: '#7dd3fc' }
+            }}
+          >
+            <CameraAltIcon sx={{ fontSize: 13 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={`Open ${sym} on Screener.in in new tab`}>
+          <IconButton
+            size="small"
+            onClick={e => handleOpenScreenerWeb(sym, e)}
+            sx={{
+              p: 0.35,
+              color: '#a78bfa',
+              bgcolor: 'rgba(167,139,250,0.1)',
+              border: '1px solid rgba(167,139,250,0.25)',
+              borderRadius: 1,
+              '&:hover': { bgcolor: 'rgba(167,139,250,0.22)', color: '#c4b5fd' }
+            }}
+          >
+            <OpenInNewIcon sx={{ fontSize: 13 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    );
+  };
 
   // Computed Section 1 Aggregates (reflecting active filter)
   const totalPotentialProfit = displaySection1.reduce(
@@ -436,13 +662,52 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
             Identify booking opportunities and track high-volatility moves.
           </Typography>
         </Box>
-        <IconButton
-          onClick={() => loadAllData(N)}
-          disabled={loading}
-          sx={{ color: 'primary.main', border: '1px solid', borderColor: 'divider', borderRadius: 2 }}
-        >
-          <RefreshIcon />
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          {activeTab === 0 && (
+            <>
+              <Tooltip title="Pre-capture Screener.in PE/EPS & Peer Comparison screenshots for all Section 1 stocks not cached within the last 90 days">
+                <span>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={batchCapturing ? <CircularProgress size={14} color="inherit" /> : <CameraAltIcon />}
+                    onClick={handleBatchCaptureScreener}
+                    disabled={batchCapturing || displaySection1.length === 0}
+                    sx={{
+                      borderRadius: 2,
+                      px: 2,
+                      height: 38,
+                      whiteSpace: 'nowrap',
+                      fontWeight: 600,
+                      borderColor: 'rgba(56,189,248,0.45)',
+                      color: '#38bdf8',
+                      '&:hover': { borderColor: '#38bdf8', bgcolor: 'rgba(56,189,248,0.08)' }
+                    }}
+                  >
+                    {batchCapturing ? 'Capturing Snapshots...' : 'Sync Screener Snapshots'}
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<DownloadIcon />}
+                onClick={handleExportSection1Excel}
+                disabled={exportingSection1 || displaySection1.length === 0}
+                sx={{ borderRadius: 2, px: 2, height: 38, whiteSpace: 'nowrap', fontWeight: 600 }}
+              >
+                {exportingSection1 ? 'Exporting...' : 'Export Excel'}
+              </Button>
+            </>
+          )}
+          <IconButton
+            onClick={() => loadAllData(N)}
+            disabled={loading}
+            sx={{ color: 'primary.main', border: '1px solid', borderColor: 'divider', borderRadius: 2 }}
+          >
+            <RefreshIcon />
+          </IconButton>
+        </Box>
       </Box>
 
       {/* Action (24h) Filter Dropdown Menu */}
@@ -563,7 +828,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                   whiteSpace: 'nowrap'
                                 }}
                               >
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, whiteSpace: 'nowrap' }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, whiteSpace: 'nowrap' }}>
                                   <span
                                     style={{ color: '#2962ff', cursor: 'pointer', whiteSpace: 'nowrap' }}
                                     onClick={() => onViewStock(row.script)}
@@ -573,6 +838,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                       : row.script}
                                     {row.is_partial ? ' | Partially Settled' : ''}
                                   </span>
+                                  {renderScreenerActions(row.script)}
                                   {isManual && (
                                     <Chip
                                       label="MANUAL"
@@ -587,6 +853,14 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     />
                                   )}
                                 </Box>
+                              </TableCell>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12, fontWeight: 600 }}>
+                                {row.total_market_value != null
+                                  ? `₹${Number(row.total_market_value).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+                                  : '—'}
+                              </TableCell>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12, fontWeight: 700, color: '#38bdf8' }}>
+                                {row.lot_value_pct != null ? `${Number(row.lot_value_pct).toFixed(1)}%` : '—'}
                               </TableCell>
                               <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12 }}>
                                 {fmt(row.buying_price)}
@@ -669,12 +943,51 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                   <span style={{ color: '#64748b', fontSize: 11 }}>Auto</span>
                                 )}
                               </TableCell>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', minWidth: 210 }}>
+                                <TextField
+                                  size="small"
+                                  fullWidth
+                                  variant="standard"
+                                  placeholder="Add comment..."
+                                  value={row.comment || ''}
+                                  onChange={e => handleCommentChange(row.script, e.target.value)}
+                                  onBlur={e => handleCommentBlur(row.script, e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }}
+                                  slotProps={{
+                                    input: {
+                                      disableUnderline: true,
+                                      sx: {
+                                        fontSize: 12,
+                                        color: '#e2e8f0',
+                                        px: 1,
+                                        py: 0.4,
+                                        borderRadius: 1,
+                                        bgcolor: 'rgba(15, 23, 42, 0.45)',
+                                        border: '1px solid transparent',
+                                        transition: 'border-color 0.2s, background-color 0.2s',
+                                        '&:hover': {
+                                          borderColor: '#2a2e43',
+                                          bgcolor: 'rgba(15, 23, 42, 0.75)'
+                                        },
+                                        '&.Mui-focused': {
+                                          borderColor: '#2962ff',
+                                          bgcolor: 'rgba(15, 23, 42, 0.9)'
+                                        }
+                                      }
+                                    }
+                                  }}
+                                />
+                              </TableCell>
                             </TableRow>
                           );
                         })
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={11} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                          <TableCell colSpan={14} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                             No matching profit booking candidates currently.
                           </TableCell>
                         </TableRow>
@@ -682,6 +995,73 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                     </TableBody>
                   </Table>
                 </CardContent>
+              </Card>
+
+              {/* TradingView Watchlist Extraction Tool (Section 1 only) */}
+              <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2, p: 3, mt: 3 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    TradingView Watchlist String:
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    {copiedAlert && (
+                      <Chip
+                        label="Copied to Clipboard!"
+                        size="small"
+                        sx={{ bgcolor: 'rgba(16,185,129,0.15)', color: '#10b981', fontWeight: 700, fontSize: 12 }}
+                      />
+                    )}
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<DownloadIcon />}
+                      onClick={handleExportSection1Excel}
+                      disabled={exportingSection1 || displaySection1.length === 0}
+                      sx={{ borderRadius: 2, px: 2, py: 0.7, whiteSpace: 'nowrap', textTransform: 'none', fontWeight: 600 }}
+                    >
+                      {exportingSection1 ? 'Exporting...' : 'Export Excel'}
+                    </Button>
+                  </Box>
+                </Box>
+                <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    value={section1TradingViewString}
+                    slotProps={{
+                      input: {
+                        readOnly: true,
+                        sx: {
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                          color: '#e2e8f0',
+                          bgcolor: 'rgba(15, 23, 42, 0.6)'
+                        }
+                      }
+                    }}
+                    placeholder="No stocks visible in Section 1..."
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                  <Tooltip title="Copy string for TradingView watchlist import">
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={handleCopySection1Watchlist}
+                      disabled={!section1TradingViewString}
+                      startIcon={<ContentCopyIcon />}
+                      sx={{
+                        borderRadius: 2,
+                        px: 2.5,
+                        py: 1,
+                        whiteSpace: 'nowrap',
+                        textTransform: 'none',
+                        fontWeight: 700
+                      }}
+                    >
+                      {copiedAlert ? 'Copied!' : 'Copy'}
+                    </Button>
+                  </Tooltip>
+                </Box>
               </Card>
             </Box>
           )}
@@ -754,15 +1134,18 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           {displaySection2Top.length > 0 ? (
                             displaySection2Top.map((row, i) => (
                               <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
-                                  <span
-                                    style={{ color: '#2962ff', cursor: 'pointer' }}
-                                    onClick={() => onViewStock(row.script)}
-                                  >
-                                    {row.script && row.script.endsWith('-EQ')
-                                      ? row.script.substring(0, row.script.length - 3)
-                                      : row.script}
-                                  </span>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                    <span
+                                      style={{ color: '#2962ff', cursor: 'pointer' }}
+                                      onClick={() => onViewStock(row.script)}
+                                    >
+                                      {row.script && row.script.endsWith('-EQ')
+                                        ? row.script.substring(0, row.script.length - 3)
+                                        : row.script}
+                                    </span>
+                                    {renderScreenerActions(row.script)}
+                                  </Box>
                                 </TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.broker}</TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.quantity}</TableCell>
@@ -876,15 +1259,18 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           {displaySection2Bottom.length > 0 ? (
                             displaySection2Bottom.map((row, i) => (
                               <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
-                                  <span
-                                    style={{ color: '#2962ff', cursor: 'pointer' }}
-                                    onClick={() => onViewStock(row.script)}
-                                  >
-                                    {row.script && row.script.endsWith('-EQ')
-                                      ? row.script.substring(0, row.script.length - 3)
-                                      : row.script}
-                                  </span>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                    <span
+                                      style={{ color: '#2962ff', cursor: 'pointer' }}
+                                      onClick={() => onViewStock(row.script)}
+                                    >
+                                      {row.script && row.script.endsWith('-EQ')
+                                        ? row.script.substring(0, row.script.length - 3)
+                                        : row.script}
+                                    </span>
+                                    {renderScreenerActions(row.script)}
+                                  </Box>
                                 </TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.broker}</TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.quantity}</TableCell>
@@ -1081,15 +1467,18 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           {displaySection3Top.length > 0 ? (
                             displaySection3Top.map((row, i) => (
                               <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
-                                  <span
-                                    style={{ color: '#2962ff', cursor: 'pointer' }}
-                                    onClick={() => onViewStock(row.script)}
-                                  >
-                                    {row.script && row.script.endsWith('-EQ')
-                                      ? row.script.substring(0, row.script.length - 3)
-                                      : row.script}
-                                  </span>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                    <span
+                                      style={{ color: '#2962ff', cursor: 'pointer' }}
+                                      onClick={() => onViewStock(row.script)}
+                                    >
+                                      {row.script && row.script.endsWith('-EQ')
+                                        ? row.script.substring(0, row.script.length - 3)
+                                        : row.script}
+                                    </span>
+                                    {renderScreenerActions(row.script)}
+                                  </Box>
                                 </TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.broker}</TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.quantity}</TableCell>
@@ -1203,15 +1592,18 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                           {displaySection3Bottom.length > 0 ? (
                             displaySection3Bottom.map((row, i) => (
                               <TableRow key={row.script || i} sx={{ '&:hover': { bgcolor: 'rgba(41,98,255,0.05)' } }}>
-                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700 }}>
-                                  <span
-                                    style={{ color: '#2962ff', cursor: 'pointer' }}
-                                    onClick={() => onViewStock(row.script)}
-                                  >
-                                    {row.script && row.script.endsWith('-EQ')
-                                      ? row.script.substring(0, row.script.length - 3)
-                                      : row.script}
-                                  </span>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                    <span
+                                      style={{ color: '#2962ff', cursor: 'pointer' }}
+                                      onClick={() => onViewStock(row.script)}
+                                    >
+                                      {row.script && row.script.endsWith('-EQ')
+                                        ? row.script.substring(0, row.script.length - 3)
+                                        : row.script}
+                                    </span>
+                                    {renderScreenerActions(row.script)}
+                                  </Box>
                                 </TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.broker}</TableCell>
                                 <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 11 }}>{row.quantity}</TableCell>
@@ -1416,6 +1808,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                       ? row.script.substring(0, row.script.length - 3)
                                       : row.script}
                                   </span>
+                                  {renderScreenerActions(row.script)}
                                 </Box>
                               </TableCell>
 
@@ -1518,6 +1911,186 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
           )}
         </Box>
       )}
+
+      {/* Screener.in Quick-View Snapshot Modal */}
+      <Dialog
+        open={screenerModalOpen}
+        onClose={() => setScreenerModalOpen(false)}
+        maxWidth="xl"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              bgcolor: '#0f172a',
+              border: '1px solid #2a2e43',
+              borderRadius: 2,
+              backgroundImage: 'none'
+            }
+          }
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 1.5,
+            borderBottom: '1px solid #2a2e43',
+            py: 1.5,
+            px: 2.5
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+            <Typography variant="h6" sx={{ fontWeight: 800, color: '#f8fafc' }}>
+              Screener.in Valuation — {screenerData?.symbol || ''}
+            </Typography>
+            {screenerData?.captured_at && (
+              <Chip
+                label={`Snapshot: ${screenerData.captured_at} (${screenerData.age_days ?? 0}d old • Auto-cached 90d)`}
+                size="small"
+                sx={{
+                  bgcolor: 'rgba(16,185,129,0.14)',
+                  color: '#34d399',
+                  fontWeight: 600,
+                  fontSize: 11
+                }}
+              />
+            )}
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {screenerData?.symbol && (
+              <>
+                <Tooltip title="Re-capture fresh screenshots from Screener.in now">
+                  <span>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={screenerLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshIcon />}
+                      onClick={() => handleOpenScreenerSnapshot(screenerData.symbol, true)}
+                      disabled={screenerLoading}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderRadius: 1.5,
+                        borderColor: 'rgba(56,189,248,0.4)',
+                        color: '#38bdf8'
+                      }}
+                    >
+                      Refresh Snapshot
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Button
+                  variant="contained"
+                  size="small"
+                  endIcon={<OpenInNewIcon sx={{ fontSize: 15 }} />}
+                  onClick={() => handleOpenScreenerWeb(screenerData.symbol)}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    borderRadius: 1.5,
+                    bgcolor: '#2962ff',
+                    '&:hover': { bgcolor: '#1e4bd8' }
+                  }}
+                >
+                  Open on Screener.in
+                </Button>
+              </>
+            )}
+            <IconButton onClick={() => setScreenerModalOpen(false)} size="small" sx={{ color: 'text.secondary' }}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 2.5 }}>
+          {screenerLoading ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, gap: 2 }}>
+              <CircularProgress size={38} />
+              <Typography variant="body2" color="text.secondary">
+                Capturing Quarterly EPS / PE Ratio Chart & Peer Comparison from Screener.in for{' '}
+                <strong>{screenerData?.symbol}</strong>...
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Once saved, this snapshot will load instantly for the next 90 days.
+              </Typography>
+            </Box>
+          ) : screenerError ? (
+            <Box sx={{ py: 6, textAlign: 'center' }}>
+              <Typography variant="body1" sx={{ color: '#ef4444', fontWeight: 600, mb: 1 }}>
+                {screenerError}
+              </Typography>
+              {screenerData?.symbol && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  endIcon={<OpenInNewIcon />}
+                  onClick={() => handleOpenScreenerWeb(screenerData.symbol)}
+                  sx={{ mt: 1, textTransform: 'none' }}
+                >
+                  Open {screenerData.symbol} directly on Screener.in
+                </Button>
+              )}
+            </Box>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {screenerData?.chart_url && (
+                <Box>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ fontWeight: 700, color: '#93c5fd', mb: 1, textTransform: 'uppercase', letterSpacing: 0.6 }}
+                  >
+                    1. Quarterly TTM EPS Trend & P/E Ratio (3Yr)
+                  </Typography>
+                  <Box
+                    sx={{
+                      border: '1px solid #2a2e43',
+                      borderRadius: 2,
+                      overflow: 'hidden',
+                      bgcolor: '#ffffff',
+                      p: 1
+                    }}
+                  >
+                    <img
+                      src={screenerData.chart_url}
+                      alt={`${screenerData.symbol} PE & EPS Chart`}
+                      style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 4 }}
+                    />
+                  </Box>
+                </Box>
+              )}
+
+              {screenerData?.peers_url && (
+                <Box>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ fontWeight: 700, color: '#93c5fd', mb: 1, textTransform: 'uppercase', letterSpacing: 0.6 }}
+                  >
+                    2. Peer Comparison
+                  </Typography>
+                  <Box
+                    sx={{
+                      border: '1px solid #2a2e43',
+                      borderRadius: 2,
+                      overflow: 'hidden',
+                      bgcolor: '#ffffff',
+                      p: 1
+                    }}
+                  >
+                    <img
+                      src={screenerData.peers_url}
+                      alt={`${screenerData.symbol} Peer Comparison`}
+                      style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 4 }}
+                    />
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 };

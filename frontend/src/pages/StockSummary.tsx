@@ -21,7 +21,7 @@ import NoteAltIcon from '@mui/icons-material/NoteAlt';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList, Cell
 } from 'recharts';
 
 interface StockSummaryProps {
@@ -408,9 +408,6 @@ const StockSummary: React.FC<StockSummaryProps> = ({
       .slice(-30);
   }, [data]);
 
-  const buyItems = useMemo(() => chartData.filter(d => d.buyQty > 0), [chartData]);
-  const sellItems = useMemo(() => chartData.filter(d => d.sellQty > 0), [chartData]);
-
   // Dynamic Y-axis domain for price mode.
   // Floor = max(avgPrice / 2,  minPrice − avgPrice × 8%)
   //   • "avgPrice / 2"        → user's proportional zoom anchor (e.g. Reliance ₹1300 → ₹650)
@@ -517,66 +514,91 @@ const StockSummary: React.FC<StockSummaryProps> = ({
     };
   }, [data]);
 
+  const highlightDateStr = useMemo(() => {
+    if (!data?.highlight_date) return null;
+    return data.highlight_date.split('T')[0].split(' ')[0];
+  }, [data]);
+
   // ─── Chart label renderers ───────────────────────────────────────────────────
 
   const renderBuyLabel = (props: any) => {
     const { x, y, width, value, index } = props;
     if (!value || value === 0) return null;
-    const item = chartData[index] || buyItems[index];
-    if (!item) return null;
-    const buyVal = item.buyValue ?? 0;
-    const formattedVal = Math.round(buyVal).toLocaleString('en-IN');
+    const isTarget = Boolean(highlightDateStr && chartData[index]?.date === highlightDateStr);
     return (
-      <text
-        x={x + width / 2}
-        y={y - 20}
-        fill="#10b981"
-        fontSize={13}
-        fontWeight={600}
-        textAnchor="middle"
-      >
-        <tspan x={x + width / 2} dy="0">{`+${value}`}</tspan>
-        <tspan x={x + width / 2} dy="14">{formattedVal}</tspan>
-      </text>
+      <g>
+        {isTarget && (
+          <text
+            x={x + width / 2}
+            y={y - 26}
+            fill="#eab308"
+            fontSize={14}
+            fontWeight={700}
+            textAnchor="middle"
+          >
+            🎯
+          </text>
+        )}
+        <text
+          x={x + width / 2}
+          y={y - 8}
+          fill="#ffffff"
+          fontSize={16.9}
+          fontWeight={isTarget ? 700 : 600}
+          textAnchor="middle"
+        >
+          {`${value}`}
+        </text>
+      </g>
     );
   };
 
   const renderSellLabel = (props: any) => {
-    const { x, y, width, value, index } = props;
-    if (!value || value === 0) return null;
-    const item = chartData[index] || sellItems[index];
-    if (!item) return null;
-    const sellVal = item.sellValue ?? 0;
-    const formattedVal = Math.round(sellVal).toLocaleString('en-IN');
-    return (
-      <text
-        x={x + width / 2}
-        y={y - 20}
-        fill="#ef4444"
-        fontSize={13}
-        fontWeight={600}
-        textAnchor="middle"
-      >
-        <tspan x={x + width / 2} dy="0">{`-${value}`}</tspan>
-        <tspan x={x + width / 2} dy="14">{formattedVal}</tspan>
-      </text>
-    );
-  };
-
-  const renderBuyPriceLabel = (props: any) => {
     const { x, y, width, value } = props;
     if (!value || value === 0) return null;
     return (
       <text
         x={x + width / 2}
         y={y - 8}
-        fill="#10b981"
-        fontSize={11}
+        fill="#ffffff"
+        fontSize={16.9}
         fontWeight={600}
         textAnchor="middle"
       >
-        {`₹${Math.round(value).toLocaleString('en-IN')}`}
+        {`${value}`}
       </text>
+    );
+  };
+
+  const renderBuyPriceLabel = (props: any) => {
+    const { x, y, width, value, index } = props;
+    if (!value || value === 0) return null;
+    const isTarget = Boolean(highlightDateStr && chartData[index]?.date === highlightDateStr);
+    return (
+      <g>
+        {isTarget && (
+          <text
+            x={x + width / 2}
+            y={y - 24}
+            fill="#eab308"
+            fontSize={14}
+            fontWeight={700}
+            textAnchor="middle"
+          >
+            🎯
+          </text>
+        )}
+        <text
+          x={x + width / 2}
+          y={y - 8}
+          fill="#ffffff"
+          fontSize={14.3}
+          fontWeight={isTarget ? 700 : 600}
+          textAnchor="middle"
+        >
+          {`₹${Math.round(value).toLocaleString('en-IN')}`}
+        </text>
+      </g>
     );
   };
 
@@ -587,8 +609,8 @@ const StockSummary: React.FC<StockSummaryProps> = ({
       <text
         x={x + width / 2}
         y={y - 8}
-        fill="#ef4444"
-        fontSize={11}
+        fill="#ffffff"
+        fontSize={14.3}
         fontWeight={600}
         textAnchor="middle"
       >
@@ -779,7 +801,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
               </RadioGroup>
             </Box>
             <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={chartData} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
+              <BarChart data={chartData} margin={{ top: 36, right: 20, left: 10, bottom: 20 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                 <XAxis
                   dataKey="date"
@@ -806,6 +828,12 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                 {chartMode === 'qty' ? (
                   <>
                     <Bar dataKey="buyQty" name="Bought Qty" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} isAnimationActive={false}>
+                      {chartData.map((entry, idx) => (
+                        <Cell
+                          key={`buy-qty-${idx}`}
+                          fill={highlightDateStr && entry.date === highlightDateStr ? '#eab308' : '#10b981'}
+                        />
+                      ))}
                       <LabelList dataKey="buyQty" content={renderBuyLabel} />
                     </Bar>
                     <Bar dataKey="sellQty" name="Sold Qty" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={20} isAnimationActive={false}>
@@ -815,6 +843,12 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                 ) : (
                   <>
                     <Bar dataKey="buyPrice" name="Bought Price" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} isAnimationActive={false}>
+                      {chartData.map((entry, idx) => (
+                        <Cell
+                          key={`buy-price-${idx}`}
+                          fill={highlightDateStr && entry.date === highlightDateStr ? '#eab308' : '#10b981'}
+                        />
+                      ))}
                       <LabelList dataKey="buyPrice" content={renderBuyPriceLabel} />
                     </Bar>
                     <Bar dataKey="sellPrice" name="Sold Price" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={20} isAnimationActive={false}>
@@ -1295,6 +1329,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
                           }}
                         >
                           <TableCell sx={{ fontSize: 12, fontWeight: isTarget ? 700 : 500, color: isTarget ? '#eab308' : 'inherit' }}>
+                            {isTarget && <span style={{ marginRight: 4 }} title="Next LIFO Settlement Lot">🎯</span>}
                             {fmtDate(t.date)}
                           </TableCell>
                           <TableCell sx={{ fontSize: 12 }}>{t.broker}</TableCell>

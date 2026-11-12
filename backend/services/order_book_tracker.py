@@ -225,15 +225,22 @@ def get_zerodha_api_client() -> Optional[KiteConnect]:
         traceback.print_exc()
         return None
 
-def is_fo_trade(symbol: str, segment: Optional[str] = None) -> bool:
+import re
+
+def is_fo_trade(symbol: str, segment: Optional[str] = None, exchange: Optional[str] = None) -> bool:
     """
-    Returns True if symbol or segment corresponds to a Futures & Options (F&O) contract.
+    Returns True if symbol, segment, or exchange corresponds to a Futures & Options (F&O) contract.
+    Ensures equity stocks ending in 'CE'/'PE' (e.g., RELIANCE, BAJFINANCE, COHANCE) are NOT treated as F&O.
     """
-    sym = symbol.strip().upper()
-    seg = segment.strip().upper() if segment else ""
-    if seg in ["NFO", "BFO", "CDS", "MCX"]:
+    sym = (symbol or "").strip().upper()
+    if sym.endswith("-EQ"):
+        sym = sym[:-3].strip()
+    seg = (segment or "").strip().upper()
+    exch = (exchange or "").strip().upper()
+    if seg in ["NFO", "BFO", "CDS", "MCX"] or exch in ["NFO", "BFO", "CDS", "MCX"]:
         return True
-    if sym.endswith("CE") or sym.endswith("PE") or sym.endswith("FUT"):
+    # F&O symbols always contain digits (expiry/strike) before CE, PE, or FUT (e.g. NIFTY26DEC27000PE, RELIANCE26NOVFUT)
+    if re.search(r"\d+(?:\.\d+)?(?:CE|PE)$", sym) or re.search(r"\d+[A-Z]*FUT$", sym):
         return True
     if any(x in sym for x in [" FUT", " OPT", " CALL", " PUT"]):
         return True
@@ -253,7 +260,7 @@ def fetch_zerodha_orders(kite: KiteConnect) -> List[dict]:
                 continue
                 
             symbol = ord.get("tradingsymbol") or ""
-            if is_fo_trade(symbol, segment=ord.get("segment")):
+            if is_fo_trade(symbol, segment=ord.get("segment"), exchange=ord.get("exchange")):
                 continue
                 
             qty = float(ord.get("quantity") or 0.0)
@@ -261,8 +268,10 @@ def fetch_zerodha_orders(kite: KiteConnect) -> List[dict]:
             script = normalize_script_name(symbol, segment=ord.get("segment"), exchange=ord.get("exchange"))
             
             # Format time
-            time_val = ord.get("order_timestamp")
-            if isinstance(time_val, str):
+            time_val = ord.get("order_timestamp") or ord.get("exchange_timestamp")
+            if isinstance(time_val, datetime):
+                exec_time = time_val
+            elif isinstance(time_val, str):
                 try:
                     exec_time = datetime.fromisoformat(time_val.replace("Z", "+00:00"))
                 except Exception:
@@ -368,17 +377,20 @@ def sync_executed_orders(force: bool = False) -> int:
 
     print(f"[Order Tracker] Starting order sync cycle at {datetime.now()}...")
     db = SessionLocal()
-    # Prune existing F&O order records to clean database
+    # Prune existing F&O order records to clean database (only true F&O symbols with digits before CE/PE/FUT)
     try:
-        db.query(ExecutedOrder).filter(
+        existing_candidates = db.query(ExecutedOrder).filter(
             (ExecutedOrder.script.like("%CE")) |
             (ExecutedOrder.script.like("%PE")) |
             (ExecutedOrder.script.like("%FUT")) |
             (ExecutedOrder.script.like("%CE-EQ")) |
             (ExecutedOrder.script.like("%PE-EQ")) |
             (ExecutedOrder.script.like("%FUT-EQ"))
-        ).delete(synchronize_session=False)
-        db.commit()
+        ).all()
+        fo_ids = [r.id for r in existing_candidates if is_fo_trade(r.script)]
+        if fo_ids:
+            db.query(ExecutedOrder).filter(ExecutedOrder.id.in_(fo_ids)).delete(synchronize_session=False)
+            db.commit()
     except Exception as ed:
         print(f"[Order Tracker] Error cleaning up F&O rows: {ed}")
         db.rollback()

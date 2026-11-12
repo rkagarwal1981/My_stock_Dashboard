@@ -116,8 +116,8 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
 
   // Chart & History table view controls
-  const [chartMetric, setChartMetric] = useState<'qty' | 'lots' | 'price'>('qty');
-  const [historyTab, setHistoryTab] = useState<0 | 1>(0); // 0 = All Executions, 1 = Daily Consolidated
+  const [chartMetric, setChartMetric] = useState<'lots' | 'price'>('lots');
+  const [historyTab, setHistoryTab] = useState<0 | 1 | 2>(0); // 0 = All Executions, 1 = Daily Consolidated, 2 = Net Consolidation
 
   const loadDashboard = useCallback(async (refresh = false) => {
     try {
@@ -170,6 +170,17 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
       loadContractHistory(selectedSymbol);
     }
   }, [selectedSymbol, loadContractHistory]);
+
+  // Refresh F&O LTPs and contract history every 5 minutes (300,000 ms)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadDashboard(true);
+      if (selectedSymbol) {
+        loadContractHistory(selectedSymbol);
+      }
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [loadDashboard, loadContractHistory, selectedSymbol]);
 
   const handleSyncPositions = async (withTradebook = false) => {
     try {
@@ -229,16 +240,14 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
     return allPos.find((p: any) => p.tradingsymbol === selectedSymbol) || null;
   }, [data, selectedSymbol]);
 
-  // Custom bar labels for the Buy/Sell Qty chart
+  // Custom bar labels for the Buy/Sell Lots chart
   const renderBuyBarLabel = (props: any) => {
     const { x, y, width, value } = props;
     if (!value || value <= 0) return null;
     const labelText =
       chartMetric === 'price'
         ? `₹${Math.round(value).toLocaleString('en-IN')}`
-        : chartMetric === 'lots'
-        ? `+${value}L`
-        : `+${value}`;
+        : `+${value}L`;
     return (
       <text
         x={x + width / 2}
@@ -259,9 +268,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
     const labelText =
       chartMetric === 'price'
         ? `₹${Math.round(value).toLocaleString('en-IN')}`
-        : chartMetric === 'lots'
-        ? `-${value}L`
-        : `-${value}`;
+        : `-${value}L`;
     return (
       <text
         x={x + width / 2}
@@ -293,20 +300,20 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.8, color: '#f8fafc' }}>
             Date: {fmtDate(item.date)}
           </Typography>
-          {item.buyQty > 0 && (
+          {item.buyLots > 0 && (
             <Box sx={{ mb: 0.5 }}>
               <Typography variant="body2" sx={{ color: '#10b981', fontWeight: 700 }}>
-                Buy: +{item.buyQty.toLocaleString('en-IN')} Qty ({item.buyLots} Lots)
+                Buy: +{item.buyLots} Lots
               </Typography>
               <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block' }}>
                 Avg Buy Price: ₹{Number(item.buyPrice).toLocaleString('en-IN', { maximumFractionDigits: 2 })} • Value: {fmtCurrency(item.buyValue)}
               </Typography>
             </Box>
           )}
-          {item.sellQty > 0 && (
+          {item.sellLots > 0 && (
             <Box sx={{ mb: 0.5 }}>
               <Typography variant="body2" sx={{ color: '#ef4444', fontWeight: 700 }}>
-                Sell: -{item.sellQty.toLocaleString('en-IN')} Qty ({item.sellLots} Lots)
+                Sell: -{item.sellLots} Lots
               </Typography>
               <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block' }}>
                 Avg Sell Price: ₹{Number(item.sellPrice).toLocaleString('en-IN', { maximumFractionDigits: 2 })} • Value: {fmtCurrency(item.sellValue)}
@@ -315,7 +322,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
           )}
           <Divider sx={{ my: 0.8, borderColor: '#2a2e43' }} />
           <Typography variant="caption" sx={{ color: '#cbd5e1', fontWeight: 600 }}>
-            Cumulative Net Position: {item.cumulativeNetQty > 0 ? `+${item.cumulativeNetQty}` : item.cumulativeNetQty} Qty ({item.cumulativeNetLots > 0 ? `+${item.cumulativeNetLots}` : item.cumulativeNetLots} Lots)
+            Cumulative Net Position: {item.cumulativeNetLots > 0 ? `+${item.cumulativeNetLots}` : item.cumulativeNetLots} Lots
           </Typography>
         </Box>
       );
@@ -470,49 +477,50 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
         <CardContent sx={{ p: 2.5 }}>
           <Grid container spacing={2.5} sx={{ alignItems: 'center' }}>
             <Grid size={{ xs: 12, md: 7 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                <BalanceIcon sx={{ color: summary.balance_status === 'BALANCED' ? '#10b981' : '#f59e0b' }} />
-                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                <BalanceIcon sx={{ color: summary.balance_status === 'BALANCED' ? '#10b981' : '#f59e0b', fontSize: 26 }} />
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: 20.8 }}>
                   Iron Condor Balance Meter (PE Spread vs CE Spread)
                 </Typography>
                 <Chip
                   size="small"
                   label={
                     summary.balance_status === 'PE_HEAVY'
-                      ? `PE Heavy by +${summary.imbalance_lots} Lots (${summary.imbalance_qty} Qty)`
+                      ? `PE Heavy by +${summary.imbalance_lots} Lots`
                       : summary.balance_status === 'CE_HEAVY'
-                      ? `CE Heavy by +${Math.abs(summary.imbalance_lots)} Lots (${Math.abs(summary.imbalance_qty)} Qty)`
+                      ? `CE Heavy by +${Math.abs(summary.imbalance_lots)} Lots`
                       : 'Balanced Iron Condor'
                   }
                   sx={{
+                    height: 28,
                     bgcolor:
                       summary.balance_status === 'BALANCED'
                         ? 'rgba(16, 185, 129, 0.15)'
                         : 'rgba(245, 158, 11, 0.15)',
                     color: summary.balance_status === 'BALANCED' ? '#10b981' : '#f59e0b',
                     fontWeight: 700,
-                    fontSize: 11,
+                    fontSize: 14.3,
                   }}
                 />
               </Box>
 
-              <Typography variant="body2" sx={{ color: '#cbd5e1', mb: 1.5 }}>
-                {summary.recommendation}
+              <Typography variant="body2" sx={{ color: '#cbd5e1', mb: 1.5, fontSize: 18.2 }}>
+                {String(summary.recommendation || '').replace(/\s*\([\d,]+\s*Qty\)/gi, '')}
               </Typography>
 
               {/* Visual PE vs CE Proportion Bar */}
               <Box sx={{ width: '100%' }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5, fontSize: 12, fontWeight: 700 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5, fontSize: 15.6, fontWeight: 700, flexWrap: 'wrap', gap: 1 }}>
                   <span style={{ color: '#38bdf8' }}>
-                    PE Spreads: {summary.pe_short_lots} Short Lots ({summary.pe_short_qty?.toLocaleString('en-IN')} Qty) / {summary.pe_long_lots} Long Hedge Lots
+                    PE Spreads: {summary.pe_short_lots} Short Lots / {summary.pe_long_lots} Long Hedge Lots
                   </span>
                   <span style={{ color: '#f472b6' }}>
-                    CE Spreads: {summary.ce_short_lots} Short Lots ({summary.ce_short_qty?.toLocaleString('en-IN')} Qty) / {summary.ce_long_lots} Long Hedge Lots
+                    CE Spreads: {summary.ce_short_lots} Short Lots / {summary.ce_long_lots} Long Hedge Lots
                   </span>
                 </Box>
                 <Box
                   sx={{
-                    height: 12,
+                    height: 14,
                     borderRadius: 6,
                     overflow: 'hidden',
                     display: 'flex',
@@ -578,13 +586,13 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         border: '1px solid #2a2e43',
                       }}
                     >
-                      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: 13, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>
                         {k.label}
                       </Typography>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800, color: k.color, lineHeight: 1.3 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800, fontSize: 20.8, color: k.color, lineHeight: 1.3 }}>
                         {k.val}
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10.5 }}>
+                      <Typography variant="caption" sx={{ color: '#64748b', fontSize: 13.7 }}>
                         {k.sub}
                       </Typography>
                     </Box>
@@ -601,8 +609,8 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
         <CardContent sx={{ p: 2.5 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, mb: 2 }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <LayersIcon sx={{ color: '#2962ff' }} />
-              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              <LayersIcon sx={{ color: '#2962ff', fontSize: 26 }} />
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: 20.8 }}>
                 Expiry-Wise PE vs CE Position Matrix (Click Expiry to Filter)
               </Typography>
             </Box>
@@ -614,8 +622,9 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                 clickable
                 onClick={() => setSelectedExpiry('ALL')}
                 sx={{
+                  height: 30,
                   fontWeight: 700,
-                  fontSize: 11,
+                  fontSize: 14.3,
                   bgcolor: selectedExpiry === 'ALL' ? '#2962ff' : 'rgba(41, 98, 255, 0.1)',
                   color: selectedExpiry === 'ALL' ? '#fff' : '#94a3b8',
                 }}
@@ -627,8 +636,9 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                   clickable
                   onClick={() => setSelectedExpiry(selectedExpiry === exp.expiry_code ? 'ALL' : exp.expiry_code)}
                   sx={{
+                    height: 30,
                     fontWeight: 700,
-                    fontSize: 11,
+                    fontSize: 14.3,
                     bgcolor: selectedExpiry === exp.expiry_code ? '#2962ff' : 'rgba(255, 255, 255, 0.05)',
                     color: selectedExpiry === exp.expiry_code ? '#fff' : '#cbd5e1',
                     border: '1px solid #2a2e43',
@@ -642,16 +652,16 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Expiry Contract</TableCell>
-                  <TableCell align="center" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>PE Short / Long (Qty &amp; Lots)</TableCell>
-                  <TableCell sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>PE Strikes (Short / Long Hedge)</TableCell>
-                  <TableCell align="right" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>PE Net Credit</TableCell>
-                  <TableCell align="right" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>PE Open P&amp;L</TableCell>
-                  <TableCell align="center" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>CE Short / Long (Qty &amp; Lots)</TableCell>
-                  <TableCell sx={{ color: '#f472b6', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>CE Strikes (Short / Long Hedge)</TableCell>
-                  <TableCell align="right" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>CE Net Credit</TableCell>
-                  <TableCell align="right" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>CE Open P&amp;L</TableCell>
-                  <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Expiry Balance</TableCell>
+                  <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Expiry Contract</TableCell>
+                  <TableCell align="center" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>PE Short / Long (Lots)</TableCell>
+                  <TableCell sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>PE Strikes (Short / Long Hedge)</TableCell>
+                  <TableCell align="right" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>PE Net Credit</TableCell>
+                  <TableCell align="right" sx={{ color: '#38bdf8', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>PE Open P&amp;L</TableCell>
+                  <TableCell align="center" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>CE Short / Long (Lots)</TableCell>
+                  <TableCell sx={{ color: '#f472b6', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>CE Strikes (Short / Long Hedge)</TableCell>
+                  <TableCell align="right" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>CE Net Credit</TableCell>
+                  <TableCell align="right" sx={{ color: '#f472b6', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>CE Open P&amp;L</TableCell>
+                  <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Expiry Balance</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -667,28 +677,28 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         bgcolor: isSelected ? 'rgba(41, 98, 255, 0.12)' : 'transparent',
                       }}
                     >
-                      <TableCell sx={{ fontWeight: 700, fontSize: 12.5 }}>
+                      <TableCell sx={{ fontWeight: 700, fontSize: 16.3 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <span>{exp.expiry_label}</span>
                           <Chip
                             label={`${exp.days_to_expiry}d`}
                             size="small"
-                            sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: 'rgba(148,163,184,0.15)', color: '#cbd5e1' }}
+                            sx={{ height: 23, fontSize: 13, fontWeight: 700, bgcolor: 'rgba(148,163,184,0.15)', color: '#cbd5e1' }}
                           />
                         </Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 13 }}>
                           Exp: {fmtDate(exp.expiry_date)}
                         </Typography>
                       </TableCell>
 
                       {/* PE Summary */}
-                      <TableCell align="center" sx={{ fontSize: 12 }}>
-                        {exp.pe_short_qty > 0 || exp.pe_long_qty > 0 ? (
+                      <TableCell align="center" sx={{ fontSize: 15.6 }}>
+                        {exp.pe_short_lots > 0 || exp.pe_long_lots > 0 ? (
                           <Box>
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12, color: '#38bdf8' }}>
-                              -{exp.pe_short_qty} ({exp.pe_short_lots}L) / +{exp.pe_long_qty} ({exp.pe_long_lots}L)
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 15.6, color: '#38bdf8' }}>
+                              -{exp.pe_short_lots}L / +{exp.pe_long_lots}L
                             </Typography>
-                            <Typography variant="caption" sx={{ color: exp.is_pe_hedged ? '#10b981' : '#f59e0b', fontSize: 10, fontWeight: 600 }}>
+                            <Typography variant="caption" sx={{ color: exp.is_pe_hedged ? '#10b981' : '#f59e0b', fontSize: 13, fontWeight: 600 }}>
                               {exp.is_pe_hedged ? '✓ 100% Wing Hedged' : '⚠ Unhedged Ratio'}
                             </Typography>
                           </Box>
@@ -697,7 +707,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         )}
                       </TableCell>
 
-                      <TableCell sx={{ fontSize: 11.5 }}>
+                      <TableCell sx={{ fontSize: 15 }}>
                         {exp.pe_short_strikes.length > 0 || exp.pe_long_strikes.length > 0 ? (
                           <Box>
                             {exp.pe_short_strikes.length > 0 && (
@@ -712,11 +722,11 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         )}
                       </TableCell>
 
-                      <TableCell align="right" sx={{ fontSize: 12, fontWeight: 600 }}>
+                      <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 600 }}>
                         {exp.pe_net_credit_val !== 0 ? (
                           <Box>
                             <div>{fmtCurrency(exp.pe_net_credit_val)}</div>
-                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 13 }}>
                               ₹{exp.pe_net_credit_pts}/pt
                             </Typography>
                           </Box>
@@ -728,22 +738,46 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                       <TableCell
                         align="right"
                         sx={{
-                          fontSize: 12,
+                          fontSize: 15.6,
                           fontWeight: 700,
                           color: exp.pe_pnl > 0 ? '#10b981' : exp.pe_pnl < 0 ? '#ef4444' : '#64748b',
                         }}
                       >
-                        {exp.pe_pnl !== 0 ? fmtSignedCurrency(exp.pe_pnl) : '—'}
+                        {(exp.pe_net_ltp_val ?? (exp.pe_net_credit_val ? exp.pe_net_credit_val - exp.pe_pnl : 0)) !== 0 ? (
+                          <Box>
+                            <div>
+                              {fmtCurrency(
+                                exp.pe_net_ltp_val ?? (exp.pe_net_credit_val - exp.pe_pnl)
+                              )}
+                            </div>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontSize: 13,
+                                color: exp.pe_pnl > 0 ? '#10b981' : exp.pe_pnl < 0 ? '#ef4444' : 'text.secondary',
+                              }}
+                            >
+                              ₹
+                              {exp.pe_net_ltp_pts ??
+                                (exp.pe_short_qty > 0
+                                  ? Math.round(((exp.pe_net_credit_val - exp.pe_pnl) / exp.pe_short_qty) * 100) / 100
+                                  : 0)}
+                              /pt
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <span style={{ color: '#475569' }}>—</span>
+                        )}
                       </TableCell>
 
                       {/* CE Summary */}
-                      <TableCell align="center" sx={{ fontSize: 12 }}>
-                        {exp.ce_short_qty > 0 || exp.ce_long_qty > 0 ? (
+                      <TableCell align="center" sx={{ fontSize: 15.6 }}>
+                        {exp.ce_short_lots > 0 || exp.ce_long_lots > 0 ? (
                           <Box>
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12, color: '#f472b6' }}>
-                              -{exp.ce_short_qty} ({exp.ce_short_lots}L) / +{exp.ce_long_qty} ({exp.ce_long_lots}L)
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 15.6, color: '#f472b6' }}>
+                              -{exp.ce_short_lots}L / +{exp.ce_long_lots}L
                             </Typography>
-                            <Typography variant="caption" sx={{ color: exp.is_ce_hedged ? '#10b981' : '#f59e0b', fontSize: 10, fontWeight: 600 }}>
+                            <Typography variant="caption" sx={{ color: exp.is_ce_hedged ? '#10b981' : '#f59e0b', fontSize: 13, fontWeight: 600 }}>
                               {exp.is_ce_hedged ? '✓ 100% Wing Hedged' : '⚠ Unhedged Ratio'}
                             </Typography>
                           </Box>
@@ -752,7 +786,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         )}
                       </TableCell>
 
-                      <TableCell sx={{ fontSize: 11.5 }}>
+                      <TableCell sx={{ fontSize: 15 }}>
                         {exp.ce_short_strikes.length > 0 || exp.ce_long_strikes.length > 0 ? (
                           <Box>
                             {exp.ce_short_strikes.length > 0 && (
@@ -767,11 +801,11 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         )}
                       </TableCell>
 
-                      <TableCell align="right" sx={{ fontSize: 12, fontWeight: 600 }}>
+                      <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 600 }}>
                         {exp.ce_net_credit_val !== 0 ? (
                           <Box>
                             <div>{fmtCurrency(exp.ce_net_credit_val)}</div>
-                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 13 }}>
                               ₹{exp.ce_net_credit_pts}/pt
                             </Typography>
                           </Box>
@@ -783,12 +817,36 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                       <TableCell
                         align="right"
                         sx={{
-                          fontSize: 12,
+                          fontSize: 15.6,
                           fontWeight: 700,
                           color: exp.ce_pnl > 0 ? '#10b981' : exp.ce_pnl < 0 ? '#ef4444' : '#64748b',
                         }}
                       >
-                        {exp.ce_pnl !== 0 ? fmtSignedCurrency(exp.ce_pnl) : '—'}
+                        {(exp.ce_net_ltp_val ?? (exp.ce_net_credit_val ? exp.ce_net_credit_val - exp.ce_pnl : 0)) !== 0 ? (
+                          <Box>
+                            <div>
+                              {fmtCurrency(
+                                exp.ce_net_ltp_val ?? (exp.ce_net_credit_val - exp.ce_pnl)
+                              )}
+                            </div>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontSize: 13,
+                                color: exp.ce_pnl > 0 ? '#10b981' : exp.ce_pnl < 0 ? '#ef4444' : 'text.secondary',
+                              }}
+                            >
+                              ₹
+                              {exp.ce_net_ltp_pts ??
+                                (exp.ce_short_qty > 0
+                                  ? Math.round(((exp.ce_net_credit_val - exp.ce_pnl) / exp.ce_short_qty) * 100) / 100
+                                  : 0)}
+                              /pt
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <span style={{ color: '#475569' }}>—</span>
+                        )}
                       </TableCell>
 
                       <TableCell align="center">
@@ -802,7 +860,8 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                               : `${exp.iron_condor_lots}L Balanced`
                           }
                           sx={{
-                            fontSize: 10.5,
+                            height: 26,
+                            fontSize: 13.7,
                             fontWeight: 700,
                             bgcolor:
                               exp.imbalance_lots === 0
@@ -843,27 +902,27 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <TrendingUpIcon sx={{ color: '#38bdf8' }} />
-                  <Typography variant="h6" sx={{ fontWeight: 800, color: '#38bdf8', fontSize: 17 }}>
+                  <TrendingUpIcon sx={{ color: '#38bdf8', fontSize: 26 }} />
+                  <Typography variant="h6" sx={{ fontWeight: 800, color: '#38bdf8', fontSize: 22.1 }}>
                     PE (Put Options) Positions
                   </Typography>
                   <Chip
                     label={`${filteredPE.length} Active`}
                     size="small"
-                    sx={{ bgcolor: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontWeight: 700, fontSize: 11 }}
+                    sx={{ height: 26, bgcolor: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', fontWeight: 700, fontSize: 14.3 }}
                   />
                 </Box>
                 <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
-                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600 }}>
-                    Short: <strong style={{ color: '#ef4444' }}>-{summary.pe_short_qty} ({summary.pe_short_lots}L)</strong>
+                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600, fontSize: 15.6 }}>
+                    Short: <strong style={{ color: '#ef4444' }}>-{summary.pe_short_lots}L</strong>
                   </Typography>
-                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600 }}>
-                    Long: <strong style={{ color: '#10b981' }}>+{summary.pe_long_qty} ({summary.pe_long_lots}L)</strong>
+                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600, fontSize: 15.6 }}>
+                    Long: <strong style={{ color: '#10b981' }}>+{summary.pe_long_lots}L</strong>
                   </Typography>
                 </Box>
               </Box>
 
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5, fontSize: 15.6 }}>
                 Click any PE position row below to inspect its complete historical transactions and Buy/Sell bar graph.
               </Typography>
 
@@ -871,19 +930,22 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                 <Table size="small">
                   <TableHead>
                     <TableRow>
-                      <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Contract / Expiry</TableCell>
-                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Strike</TableCell>
-                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Side &amp; Qty (Lots)</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Avg Price</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>LTP</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Open P&amp;L</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Day M2M</TableCell>
+                      <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Contract / Expiry</TableCell>
+                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Strike</TableCell>
+                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Side &amp; Lots</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Avg Price</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>LTP</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Open P&amp;L</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Day M2M</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {filteredPE.map((pos: any) => {
                       const isSelected = selectedSymbol === pos.tradingsymbol;
                       const isLong = pos.quantity > 0;
+                      const lotSize = data?.lot_size || 65;
+                      const dayBuyLots = Math.round(((pos.day_buy_quantity || 0) / lotSize) * 100) / 100;
+                      const daySellLots = Math.round(((pos.day_sell_quantity || 0) / lotSize) * 100) / 100;
                       return (
                         <TableRow
                           key={pos.tradingsymbol}
@@ -897,31 +959,31 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                           }}
                         >
                           <TableCell sx={{ py: 1.2 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12.5, color: isSelected ? '#38bdf8' : '#f8fafc' }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 16.3, color: isSelected ? '#38bdf8' : '#f8fafc' }}>
                               {pos.tradingsymbol}
                             </Typography>
                             <Box sx={{ display: 'flex', gap: 0.8, alignItems: 'center', mt: 0.3 }}>
                               <Chip
                                 label={pos.expiry_label}
                                 size="small"
-                                sx={{ height: 17, fontSize: 9.5, fontWeight: 700, bgcolor: 'rgba(56,189,248,0.12)', color: '#38bdf8' }}
+                                sx={{ height: 22, fontSize: 12.4, fontWeight: 700, bgcolor: 'rgba(56,189,248,0.12)', color: '#38bdf8' }}
                               />
-                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: 13 }}>
                                 {pos.days_to_expiry}d • {pos.tx_count} fills
                               </Typography>
                             </Box>
                           </TableCell>
 
                           <TableCell align="center">
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12.5 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 16.3 }}>
                               {pos.strike.toLocaleString('en-IN')}
                             </Typography>
                             <Chip
                               label={`${pos.moneyness} (${pos.distance_from_spot_pct > 0 ? '+' : ''}${pos.distance_from_spot_pct}%)`}
                               size="small"
                               sx={{
-                                height: 16,
-                                fontSize: 9,
+                                height: 21,
+                                fontSize: 11.7,
                                 fontWeight: 700,
                                 bgcolor: pos.moneyness === 'ITM' ? 'rgba(245,158,11,0.15)' : 'rgba(148,163,184,0.12)',
                                 color: pos.moneyness === 'ITM' ? '#f59e0b' : '#94a3b8',
@@ -931,41 +993,42 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
 
                           <TableCell align="center">
                             <Chip
-                              label={`${isLong ? 'BUY +' : 'SELL '}${pos.quantity} (${isLong ? '+' : ''}${pos.net_lots}L)`}
+                              label={`${isLong ? 'BUY +' : 'SELL '}${pos.net_lots}L`}
                               size="small"
                               sx={{
+                                height: 26,
                                 bgcolor: isLong ? 'rgba(16, 185, 129, 0.16)' : 'rgba(239, 68, 68, 0.16)',
                                 color: isLong ? '#10b981' : '#ef4444',
                                 fontWeight: 800,
-                                fontSize: 11,
+                                fontSize: 14.3,
                               }}
                             />
-                            {(pos.day_buy_quantity > 0 || pos.day_sell_quantity > 0) && (
-                              <Typography variant="caption" sx={{ display: 'block', fontSize: 9.5, color: '#eab308', fontWeight: 700, mt: 0.3 }}>
-                                Today: {pos.day_buy_quantity > 0 ? `+${pos.day_buy_quantity} B` : ''}{' '}
-                                {pos.day_sell_quantity > 0 ? `-${pos.day_sell_quantity} S` : ''}
+                            {(dayBuyLots > 0 || daySellLots > 0) && (
+                              <Typography variant="caption" sx={{ display: 'block', fontSize: 12.4, color: '#eab308', fontWeight: 700, mt: 0.3 }}>
+                                Today: {dayBuyLots > 0 ? `+${dayBuyLots}L B` : ''}{' '}
+                                {daySellLots > 0 ? `-${daySellLots}L S` : ''}
                               </Typography>
                             )}
                           </TableCell>
 
-                          <TableCell align="right" sx={{ fontSize: 12, fontWeight: 600 }}>
+                          <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 600 }}>
                             ₹{pos.average_price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </TableCell>
 
-                          <TableCell align="right" sx={{ fontSize: 12, fontWeight: 700, color: '#06b6d4' }}>
+                          <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, color: '#06b6d4' }}>
                             ₹{pos.last_price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </TableCell>
 
                           <TableCell
                             align="right"
                             sx={{
-                              fontSize: 12,
+                              fontSize: 15.6,
                               fontWeight: 700,
                               color: pos.pnl >= 0 ? '#10b981' : '#ef4444',
                             }}
                           >
                             <div>{fmtSignedCurrency(pos.pnl)}</div>
-                            <Typography variant="caption" sx={{ fontSize: 10, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}>
+                            <Typography variant="caption" sx={{ fontSize: 13, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}>
                               {pos.pnl_pct >= 0 ? '+' : ''}{pos.pnl_pct}%
                             </Typography>
                           </TableCell>
@@ -973,7 +1036,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                           <TableCell
                             align="right"
                             sx={{
-                              fontSize: 12,
+                              fontSize: 15.6,
                               fontWeight: 600,
                               color: pos.m2m >= 0 ? '#10b981' : '#ef4444',
                             }}
@@ -985,7 +1048,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                     })}
                     {filteredPE.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                        <TableCell colSpan={7} align="center" sx={{ py: 3, fontSize: 15.6, color: 'text.secondary' }}>
                           No open PE positions for this expiry filter.
                         </TableCell>
                       </TableRow>
@@ -1010,27 +1073,27 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
             <CardContent sx={{ p: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <TrendingDownIcon sx={{ color: '#f472b6' }} />
-                  <Typography variant="h6" sx={{ fontWeight: 800, color: '#f472b6', fontSize: 17 }}>
+                  <TrendingDownIcon sx={{ color: '#f472b6', fontSize: 26 }} />
+                  <Typography variant="h6" sx={{ fontWeight: 800, color: '#f472b6', fontSize: 22.1 }}>
                     CE (Call Options) Positions
                   </Typography>
                   <Chip
                     label={`${filteredCE.length} Active`}
                     size="small"
-                    sx={{ bgcolor: 'rgba(244, 114, 182, 0.15)', color: '#f472b6', fontWeight: 700, fontSize: 11 }}
+                    sx={{ height: 26, bgcolor: 'rgba(244, 114, 182, 0.15)', color: '#f472b6', fontWeight: 700, fontSize: 14.3 }}
                   />
                 </Box>
                 <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
-                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600 }}>
-                    Short: <strong style={{ color: '#ef4444' }}>-{summary.ce_short_qty} ({summary.ce_short_lots}L)</strong>
+                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600, fontSize: 15.6 }}>
+                    Short: <strong style={{ color: '#ef4444' }}>-{summary.ce_short_lots}L</strong>
                   </Typography>
-                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600 }}>
-                    Long: <strong style={{ color: '#10b981' }}>+{summary.ce_long_qty} ({summary.ce_long_lots}L)</strong>
+                  <Typography variant="caption" sx={{ color: '#94a3b8', fontWeight: 600, fontSize: 15.6 }}>
+                    Long: <strong style={{ color: '#10b981' }}>+{summary.ce_long_lots}L</strong>
                   </Typography>
                 </Box>
               </Box>
 
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5, fontSize: 15.6 }}>
                 Click any CE position row below to inspect its complete historical transactions and Buy/Sell bar graph.
               </Typography>
 
@@ -1038,19 +1101,22 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                 <Table size="small">
                   <TableHead>
                     <TableRow>
-                      <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Contract / Expiry</TableCell>
-                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Strike</TableCell>
-                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Side &amp; Qty (Lots)</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Avg Price</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>LTP</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Open P&amp;L</TableCell>
-                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 11, bgcolor: '#161824' }}>Day M2M</TableCell>
+                      <TableCell sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Contract / Expiry</TableCell>
+                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Strike</TableCell>
+                      <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Side &amp; Lots</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Avg Price</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>LTP</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Open P&amp;L</TableCell>
+                      <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 700, fontSize: 14.3, bgcolor: '#161824' }}>Day M2M</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {filteredCE.map((pos: any) => {
                       const isSelected = selectedSymbol === pos.tradingsymbol;
                       const isLong = pos.quantity > 0;
+                      const lotSize = data?.lot_size || 65;
+                      const dayBuyLots = Math.round(((pos.day_buy_quantity || 0) / lotSize) * 100) / 100;
+                      const daySellLots = Math.round(((pos.day_sell_quantity || 0) / lotSize) * 100) / 100;
                       return (
                         <TableRow
                           key={pos.tradingsymbol}
@@ -1064,31 +1130,31 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                           }}
                         >
                           <TableCell sx={{ py: 1.2 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12.5, color: isSelected ? '#f472b6' : '#f8fafc' }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 16.3, color: isSelected ? '#f472b6' : '#f8fafc' }}>
                               {pos.tradingsymbol}
                             </Typography>
                             <Box sx={{ display: 'flex', gap: 0.8, alignItems: 'center', mt: 0.3 }}>
                               <Chip
                                 label={pos.expiry_label}
                                 size="small"
-                                sx={{ height: 17, fontSize: 9.5, fontWeight: 700, bgcolor: 'rgba(244,114,182,0.12)', color: '#f472b6' }}
+                                sx={{ height: 22, fontSize: 12.4, fontWeight: 700, bgcolor: 'rgba(244,114,182,0.12)', color: '#f472b6' }}
                               />
-                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: 13 }}>
                                 {pos.days_to_expiry}d • {pos.tx_count} fills
                               </Typography>
                             </Box>
                           </TableCell>
 
                           <TableCell align="center">
-                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 12.5 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 16.3 }}>
                               {pos.strike.toLocaleString('en-IN')}
                             </Typography>
                             <Chip
                               label={`${pos.moneyness} (${pos.distance_from_spot_pct > 0 ? '+' : ''}${pos.distance_from_spot_pct}%)`}
                               size="small"
                               sx={{
-                                height: 16,
-                                fontSize: 9,
+                                height: 21,
+                                fontSize: 11.7,
                                 fontWeight: 700,
                                 bgcolor: pos.moneyness === 'ITM' ? 'rgba(245,158,11,0.15)' : 'rgba(148,163,184,0.12)',
                                 color: pos.moneyness === 'ITM' ? '#f59e0b' : '#94a3b8',
@@ -1098,41 +1164,42 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
 
                           <TableCell align="center">
                             <Chip
-                              label={`${isLong ? 'BUY +' : 'SELL '}${pos.quantity} (${isLong ? '+' : ''}${pos.net_lots}L)`}
+                              label={`${isLong ? 'BUY +' : 'SELL '}${pos.net_lots}L`}
                               size="small"
                               sx={{
+                                height: 26,
                                 bgcolor: isLong ? 'rgba(16, 185, 129, 0.16)' : 'rgba(239, 68, 68, 0.16)',
                                 color: isLong ? '#10b981' : '#ef4444',
                                 fontWeight: 800,
-                                fontSize: 11,
+                                fontSize: 14.3,
                               }}
                             />
-                            {(pos.day_buy_quantity > 0 || pos.day_sell_quantity > 0) && (
-                              <Typography variant="caption" sx={{ display: 'block', fontSize: 9.5, color: '#eab308', fontWeight: 700, mt: 0.3 }}>
-                                Today: {pos.day_buy_quantity > 0 ? `+${pos.day_buy_quantity} B` : ''}{' '}
-                                {pos.day_sell_quantity > 0 ? `-${pos.day_sell_quantity} S` : ''}
+                            {(dayBuyLots > 0 || daySellLots > 0) && (
+                              <Typography variant="caption" sx={{ display: 'block', fontSize: 12.4, color: '#eab308', fontWeight: 700, mt: 0.3 }}>
+                                Today: {dayBuyLots > 0 ? `+${dayBuyLots}L B` : ''}{' '}
+                                {daySellLots > 0 ? `-${daySellLots}L S` : ''}
                               </Typography>
                             )}
                           </TableCell>
 
-                          <TableCell align="right" sx={{ fontSize: 12, fontWeight: 600 }}>
+                          <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 600 }}>
                             ₹{pos.average_price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </TableCell>
 
-                          <TableCell align="right" sx={{ fontSize: 12, fontWeight: 700, color: '#06b6d4' }}>
+                          <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, color: '#06b6d4' }}>
                             ₹{pos.last_price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </TableCell>
 
                           <TableCell
                             align="right"
                             sx={{
-                              fontSize: 12,
+                              fontSize: 15.6,
                               fontWeight: 700,
                               color: pos.pnl >= 0 ? '#10b981' : '#ef4444',
                             }}
                           >
                             <div>{fmtSignedCurrency(pos.pnl)}</div>
-                            <Typography variant="caption" sx={{ fontSize: 10, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}>
+                            <Typography variant="caption" sx={{ fontSize: 13, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}>
                               {pos.pnl_pct >= 0 ? '+' : ''}{pos.pnl_pct}%
                             </Typography>
                           </TableCell>
@@ -1140,7 +1207,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                           <TableCell
                             align="right"
                             sx={{
-                              fontSize: 12,
+                              fontSize: 15.6,
                               fontWeight: 600,
                               color: pos.m2m >= 0 ? '#10b981' : '#ef4444',
                             }}
@@ -1152,7 +1219,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                     })}
                     {filteredCE.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} align="center" sx={{ py: 3, color: 'text.secondary' }}>
+                        <TableCell colSpan={7} align="center" sx={{ py: 3, fontSize: 15.6, color: 'text.secondary' }}>
                           No open CE positions for this expiry filter.
                         </TableCell>
                       </TableRow>
@@ -1174,14 +1241,15 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
               sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, color: '#cbd5e1' }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: 18.2, color: '#cbd5e1' }}>
                   Positions Exited / Rolled Today ({data.closed_today_positions.length} Contracts)
                 </Typography>
                 <Chip
                   size="small"
                   label={`Today's Exited P&L: ${fmtSignedCurrency(summary.closed_today_pnl)}`}
                   sx={{
-                    fontSize: 11,
+                    height: 26,
+                    fontSize: 14.3,
                     fontWeight: 700,
                     bgcolor: (summary.closed_today_pnl || 0) >= 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
                     color: (summary.closed_today_pnl || 0) >= 0 ? '#10b981' : '#ef4444',
@@ -1198,13 +1266,13 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                 <Table size="small">
                   <TableHead>
                     <TableRow>
-                      <TableCell sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Contract</TableCell>
-                      <TableCell sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Type</TableCell>
-                      <TableCell sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Expiry</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Overnight Qty</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Avg Buy</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Avg Sell</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 11, fontWeight: 700, color: 'text.secondary' }}>Realized P&amp;L</TableCell>
+                      <TableCell sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Contract</TableCell>
+                      <TableCell sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Type</TableCell>
+                      <TableCell sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Expiry</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Overnight Lots</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Avg Buy</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Avg Sell</TableCell>
+                      <TableCell align="right" sx={{ fontSize: 14.3, fontWeight: 700, color: 'text.secondary' }}>Realized P&amp;L</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -1218,27 +1286,29 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                           bgcolor: selectedSymbol === pos.tradingsymbol ? 'rgba(41,98,255,0.15)' : 'transparent',
                         }}
                       >
-                        <TableCell sx={{ fontSize: 12, fontWeight: 700 }}>{pos.tradingsymbol}</TableCell>
+                        <TableCell sx={{ fontSize: 15.6, fontWeight: 700 }}>{pos.tradingsymbol}</TableCell>
                         <TableCell>
                           <Chip
                             label={pos.option_type}
                             size="small"
                             sx={{
-                              height: 18,
-                              fontSize: 10,
+                              height: 23,
+                              fontSize: 13,
                               fontWeight: 700,
                               bgcolor: pos.option_type === 'PE' ? 'rgba(56,189,248,0.15)' : 'rgba(244,114,182,0.15)',
                               color: pos.option_type === 'PE' ? '#38bdf8' : '#f472b6',
                             }}
                           />
                         </TableCell>
-                        <TableCell sx={{ fontSize: 12 }}>{pos.expiry_label}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 12 }}>{pos.overnight_quantity}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 12 }}>₹{pos.buy_price}</TableCell>
-                        <TableCell align="right" sx={{ fontSize: 12 }}>₹{pos.sell_price}</TableCell>
+                        <TableCell sx={{ fontSize: 15.6 }}>{pos.expiry_label}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 15.6 }}>
+                          {Math.round(((pos.overnight_quantity || 0) / (data?.lot_size || 65)) * 100) / 100}L
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: 15.6 }}>₹{pos.buy_price}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 15.6 }}>₹{pos.sell_price}</TableCell>
                         <TableCell
                           align="right"
-                          sx={{ fontSize: 12, fontWeight: 700, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}
+                          sx={{ fontSize: 15.6, fontWeight: 700, color: pos.pnl >= 0 ? '#10b981' : '#ef4444' }}
                         >
                           {fmtSignedCurrency(pos.pnl)}
                         </TableCell>
@@ -1337,16 +1407,19 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                 onChange={(e) => setSelectedSymbol(e.target.value as string)}
                 sx={{ borderRadius: 2 }}
               >
-                {(data?.historical_contracts || []).map((c: any) => (
-                  <MenuItem key={c.symbol} value={c.symbol}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', gap: 2 }}>
-                      <span style={{ fontWeight: 700 }}>{c.symbol}</span>
-                      <span style={{ color: c.net_qty !== 0 ? '#10b981' : '#64748b', fontSize: 12 }}>
-                        {c.net_qty !== 0 ? `Open (${c.net_qty})` : 'Settled'} • {c.trade_count} trades
-                      </span>
-                    </Box>
-                  </MenuItem>
-                ))}
+                {(data?.historical_contracts || []).map((c: any) => {
+                  const netLots = c.net_lots ?? Math.round(((c.net_qty || 0) / (data?.lot_size || 65)) * 100) / 100;
+                  return (
+                    <MenuItem key={c.symbol} value={c.symbol}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', gap: 2 }}>
+                        <span style={{ fontWeight: 700 }}>{c.symbol}</span>
+                        <span style={{ color: netLots !== 0 ? '#10b981' : '#64748b', fontSize: 12 }}>
+                          {netLots !== 0 ? `Open (${netLots > 0 ? '+' : ''}${netLots}L)` : 'Settled'} • {c.trade_count} trades
+                        </span>
+                      </Box>
+                    </MenuItem>
+                  );
+                })}
               </Select>
             </FormControl>
           </Box>
@@ -1361,22 +1434,22 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
               <Grid container spacing={2} sx={{ mb: 3 }}>
                 {[
                   {
-                    label: 'Total Bought Qty (Lots)',
-                    val: `+${historyData.summary.total_buy_qty.toLocaleString('en-IN')} (${historyData.summary.total_buy_lots}L)`,
+                    label: 'Total Bought Lots',
+                    val: `+${historyData.summary.total_buy_lots}L`,
                     sub: `Avg Buy Price: ₹${historyData.summary.avg_buy_price.toLocaleString('en-IN')}`,
                     color: '#10b981',
                   },
                   {
-                    label: 'Total Sold Qty (Lots)',
-                    val: `-${historyData.summary.total_sell_qty.toLocaleString('en-IN')} (${historyData.summary.total_sell_lots}L)`,
+                    label: 'Total Sold Lots',
+                    val: `-${historyData.summary.total_sell_lots}L`,
                     sub: `Avg Sell Price: ₹${historyData.summary.avg_sell_price.toLocaleString('en-IN')}`,
                     color: '#ef4444',
                   },
                   {
-                    label: 'Net Open Qty (Lots)',
-                    val: `${historyData.summary.net_qty > 0 ? '+' : ''}${historyData.summary.net_qty.toLocaleString('en-IN')} (${historyData.summary.net_lots > 0 ? '+' : ''}${historyData.summary.net_lots}L)`,
-                    sub: historyData.summary.net_qty > 0 ? 'LONG / HEDGE POSITION' : historyData.summary.net_qty < 0 ? 'SHORT / CREDIT POSITION' : 'FULLY CLOSED / SETTLED',
-                    color: historyData.summary.net_qty > 0 ? '#10b981' : historyData.summary.net_qty < 0 ? '#f59e0b' : '#94a3b8',
+                    label: 'Net Open Lots',
+                    val: `${historyData.summary.net_lots > 0 ? '+' : ''}${historyData.summary.net_lots}L`,
+                    sub: historyData.summary.net_lots > 0 ? 'LONG / HEDGE POSITION' : historyData.summary.net_lots < 0 ? 'SHORT / CREDIT POSITION' : 'FULLY CLOSED / SETTLED',
+                    color: historyData.summary.net_lots > 0 ? '#10b981' : historyData.summary.net_lots < 0 ? '#f59e0b' : '#94a3b8',
                   },
                   {
                     label: 'Total Buy Value',
@@ -1407,13 +1480,13 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                         height: '100%',
                       }}
                     >
-                      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', display: 'block' }}>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: 13, fontWeight: 700, textTransform: 'uppercase', display: 'block' }}>
                         {item.label}
                       </Typography>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 800, color: item.color, mt: 0.3 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 800, fontSize: 20.8, color: item.color, mt: 0.3 }}>
                         {item.val}
                       </Typography>
-                      <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10.5, display: 'block' }}>
+                      <Typography variant="caption" sx={{ color: '#64748b', fontSize: 13.7, display: 'block' }}>
                         {item.sub}
                       </Typography>
                     </Box>
@@ -1437,30 +1510,25 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 2 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <BarChartIcon sx={{ color: '#10b981' }} />
-                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                            Buy &amp; Sell Quantity by Date ({selectedSymbol})
+                          <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: 18 }}>
+                            Buy &amp; Sell Lots by Date ({selectedSymbol})
                           </Typography>
                         </Box>
 
                         <RadioGroup
                           row
                           value={chartMetric}
-                          onChange={(e) => setChartMetric(e.target.value as 'qty' | 'lots' | 'price')}
+                          onChange={(e) => setChartMetric(e.target.value as 'lots' | 'price')}
                         >
-                          <FormControlLabel
-                            value="qty"
-                            control={<Radio size="small" sx={{ '&.Mui-checked': { color: '#2962ff' } }} />}
-                            label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Qty</Typography>}
-                          />
                           <FormControlLabel
                             value="lots"
                             control={<Radio size="small" sx={{ '&.Mui-checked': { color: '#2962ff' } }} />}
-                            label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Lots (65)</Typography>}
+                            label={<Typography variant="caption" sx={{ fontWeight: 600, fontSize: 14.3 }}>Lots</Typography>}
                           />
                           <FormControlLabel
                             value="price"
                             control={<Radio size="small" sx={{ '&.Mui-checked': { color: '#2962ff' } }} />}
-                            label={<Typography variant="caption" sx={{ fontWeight: 600 }}>Price (₹)</Typography>}
+                            label={<Typography variant="caption" sx={{ fontWeight: 600, fontSize: 14.3 }}>Price (₹)</Typography>}
                           />
                         </RadioGroup>
                       </Box>
@@ -1478,36 +1546,30 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                                 const parts = String(v).split('-');
                                 return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0].slice(2)}` : v;
                               }}
-                              tick={{ fill: '#94a3b8', fontSize: 11 }}
+                              tick={{ fill: '#94a3b8', fontSize: 13 }}
                             />
                             <YAxis
-                              tick={{ fill: '#94a3b8', fontSize: 11 }}
+                              tick={{ fill: '#94a3b8', fontSize: 13 }}
                               label={{
                                 value:
-                                  chartMetric === 'qty'
-                                    ? 'Quantity (Shares)'
-                                    : chartMetric === 'lots'
-                                    ? 'Lots (65 Qty/Lot)'
+                                  chartMetric === 'lots'
+                                    ? 'Lots'
                                     : 'Execution Price (₹)',
                                 angle: -90,
                                 position: 'insideLeft',
-                                style: { fill: '#94a3b8', fontSize: 11 },
+                                style: { fill: '#94a3b8', fontSize: 13 },
                               }}
                             />
                             <RechartsTooltip content={<CustomChartTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-                            <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+                            <Legend wrapperStyle={{ fontSize: 14.3, paddingTop: 8 }} />
                             <Bar
                               dataKey={
-                                chartMetric === 'qty'
-                                  ? 'buyQty'
-                                  : chartMetric === 'lots'
+                                chartMetric === 'lots'
                                   ? 'buyLots'
                                   : 'buyPrice'
                               }
                               name={
-                                chartMetric === 'qty'
-                                  ? 'Buy Qty'
-                                  : chartMetric === 'lots'
+                                chartMetric === 'lots'
                                   ? 'Buy Lots'
                                   : 'Avg Buy Price (₹)'
                               }
@@ -1518,9 +1580,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                             >
                               <LabelList
                                 dataKey={
-                                  chartMetric === 'qty'
-                                    ? 'buyQty'
-                                    : chartMetric === 'lots'
+                                  chartMetric === 'lots'
                                     ? 'buyLots'
                                     : 'buyPrice'
                                 }
@@ -1529,16 +1589,12 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                             </Bar>
                             <Bar
                               dataKey={
-                                chartMetric === 'qty'
-                                  ? 'sellQty'
-                                  : chartMetric === 'lots'
+                                chartMetric === 'lots'
                                   ? 'sellLots'
                                   : 'sellPrice'
                               }
                               name={
-                                chartMetric === 'qty'
-                                  ? 'Sell Qty'
-                                  : chartMetric === 'lots'
+                                chartMetric === 'lots'
                                   ? 'Sell Lots'
                                   : 'Avg Sell Price (₹)'
                               }
@@ -1549,9 +1605,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                             >
                               <LabelList
                                 dataKey={
-                                  chartMetric === 'qty'
-                                    ? 'sellQty'
-                                    : chartMetric === 'lots'
+                                  chartMetric === 'lots'
                                     ? 'sellLots'
                                     : 'sellPrice'
                                 }
@@ -1602,6 +1656,10 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                             label={`Daily Consolidated (${historyData.daily_timeline?.length || 0})`}
                             sx={{ minHeight: 34, textTransform: 'none', fontSize: 14.5, fontWeight: 600, py: 0.5 }}
                           />
+                          <Tab
+                            label={`Net Consolidation (${historyData.net_consolidation?.length || 0})`}
+                            sx={{ minHeight: 34, textTransform: 'none', fontSize: 14.5, fontWeight: 600, py: 0.5 }}
+                          />
                         </Tabs>
                       </Box>
 
@@ -1612,7 +1670,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                               <TableRow>
                                 <TableCell sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Date</TableCell>
                                 <TableCell sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Type</TableCell>
-                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Qty (Lots)</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Lots</TableCell>
                                 <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Price (₹)</TableCell>
                                 <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Value</TableCell>
                                 <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Running Net</TableCell>
@@ -1638,7 +1696,7 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                                     />
                                   </TableCell>
                                   <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1 }}>
-                                    {tx.quantity} ({tx.lots}L)
+                                    {tx.lots}L
                                   </TableCell>
                                   <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>
                                     ₹{Number(tx.price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1652,10 +1710,10 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                                       fontSize: 15.6,
                                       fontWeight: 700,
                                       py: 1,
-                                      color: tx.running_net_qty > 0 ? '#10b981' : tx.running_net_qty < 0 ? '#ef4444' : '#94a3b8',
+                                      color: tx.running_net_lots > 0 ? '#10b981' : tx.running_net_lots < 0 ? '#ef4444' : '#94a3b8',
                                     }}
                                   >
-                                    {tx.running_net_qty > 0 ? `+${tx.running_net_qty}` : tx.running_net_qty} ({tx.running_net_lots > 0 ? `+${tx.running_net_lots}` : tx.running_net_lots}L)
+                                    {tx.running_net_lots > 0 ? `+${tx.running_net_lots}` : tx.running_net_lots}L
                                   </TableCell>
                                 </TableRow>
                               ))}
@@ -1668,47 +1726,139 @@ const FOTrading: React.FC<FOTradingProps> = ({ showToast }) => {
                               )}
                             </TableBody>
                           </Table>
-                        ) : (
+                        ) : historyTab === 1 ? (
                           <Table size="small" stickyHeader>
                             <TableHead>
                               <TableRow>
                                 <TableCell sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Trade Date</TableCell>
                                 <TableCell sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Type</TableCell>
                                 <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Fills</TableCell>
-                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Total Qty (Lots)</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Total Lots</TableCell>
                                 <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Weighted Avg Price</TableCell>
-                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Total Value</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Current LTP</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Difference</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>%age</TableCell>
                               </TableRow>
                             </TableHead>
                             <TableBody>
-                              {(historyData.daily_timeline || []).map((row: any, idx: number) => (
-                                <TableRow key={idx} hover>
-                                  <TableCell sx={{ fontSize: 15.6, fontWeight: 600, py: 1 }}>{fmtDate(row.date)}</TableCell>
-                                  <TableCell sx={{ py: 1 }}>
-                                    <Chip
-                                      label={row.buy_sell}
-                                      size="small"
-                                      sx={{
-                                        height: 26,
-                                        fontSize: 13,
-                                        fontWeight: 800,
-                                        bgcolor: row.buy_sell === 'BUY' ? 'rgba(16,185,129,0.16)' : 'rgba(239,68,68,0.16)',
-                                        color: row.buy_sell === 'BUY' ? '#10b981' : '#ef4444',
-                                      }}
-                                    />
-                                  </TableCell>
-                                  <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>{row.trades_count}</TableCell>
-                                  <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1 }}>
-                                    {row.quantity} ({row.lots}L)
-                                  </TableCell>
-                                  <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>
-                                    ₹{Number(row.price).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </TableCell>
-                                  <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 600, py: 1 }}>
-                                    {fmtCurrency(row.value)}
+                              {(historyData.daily_timeline || []).map((row: any, idx: number) => {
+                                const avgPrice = Number(row.price || 0);
+                                const currentLtp =
+                                  selectedPositionLive?.last_price ??
+                                  row.ltp ??
+                                  historyData?.current_ltp ??
+                                  null;
+                                const diff =
+                                  currentLtp != null && avgPrice > 0
+                                    ? Number(currentLtp) - avgPrice
+                                    : null;
+                                const diffPct =
+                                  diff != null && avgPrice > 0
+                                    ? (diff / avgPrice) * 100
+                                    : null;
+                                const isSell = String(row.buy_sell || '').toUpperCase() === 'SELL';
+                                const isFavorable =
+                                  diff != null ? (isSell ? diff <= 0 : diff >= 0) : false;
+                                const diffColor =
+                                  diff == null ? '#94a3b8' : isFavorable ? '#10b981' : '#ef4444';
+
+                                return (
+                                  <TableRow key={idx} hover>
+                                    <TableCell sx={{ fontSize: 15.6, fontWeight: 600, py: 1 }}>{fmtDate(row.date)}</TableCell>
+                                    <TableCell sx={{ py: 1 }}>
+                                      <Chip
+                                        label={row.buy_sell}
+                                        size="small"
+                                        sx={{
+                                          height: 26,
+                                          fontSize: 13,
+                                          fontWeight: 800,
+                                          bgcolor: row.buy_sell === 'BUY' ? 'rgba(16,185,129,0.16)' : 'rgba(239,68,68,0.16)',
+                                          color: row.buy_sell === 'BUY' ? '#10b981' : '#ef4444',
+                                        }}
+                                      />
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>{row.trades_count}</TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1 }}>
+                                      {row.lots}L
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>
+                                      ₹{avgPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: '#06b6d4' }}>
+                                      {currentLtp != null
+                                        ? `₹${Number(currentLtp).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                        : '—'}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: diffColor }}>
+                                      {diff != null
+                                        ? `${diff >= 0 ? '+' : '-'}₹${Math.abs(diff).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                        : '—'}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: diffColor }}>
+                                      {diffPct != null
+                                        ? `${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%`
+                                        : '—'}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <Table size="small" stickyHeader>
+                            <TableHead>
+                              <TableRow>
+                                <TableCell sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Trade Date</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Total Lots</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Net Weighted Avg Price</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Net Current LTP</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>Difference</TableCell>
+                                <TableCell align="right" sx={{ bgcolor: '#161824', fontSize: 14.5, fontWeight: 700, color: 'text.secondary' }}>%age</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {(historyData.net_consolidation || []).map((row: any, idx: number) => {
+                                const netAvg = Number(row.net_avg_price || 0);
+                                const netLtp = row.net_ltp != null ? Number(row.net_ltp) : null;
+                                const diff = row.diff != null ? Number(row.diff) : (netLtp != null ? netAvg - netLtp : null);
+                                const diffPct = row.diff_pct != null ? Number(row.diff_pct) : (diff != null && netAvg !== 0 ? (diff / Math.abs(netAvg)) * 100 : null);
+                                const diffColor = diff == null ? '#94a3b8' : diff >= 0 ? '#10b981' : '#ef4444';
+
+                                return (
+                                  <TableRow key={idx} hover>
+                                    <TableCell sx={{ fontSize: 15.6, fontWeight: 600, py: 1 }}>{fmtDate(row.date)}</TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1 }}>
+                                      {row.lots}L
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, py: 1 }}>
+                                      ₹{netAvg.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: '#06b6d4' }}>
+                                      {netLtp != null
+                                        ? `₹${netLtp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                        : '—'}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: diffColor }}>
+                                      {diff != null
+                                        ? `${diff >= 0 ? '+' : '-'}₹${Math.abs(diff).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                        : '—'}
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontSize: 15.6, fontWeight: 700, py: 1, color: diffColor }}>
+                                      {diffPct != null
+                                        ? `${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%`
+                                        : '—'}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                              {(historyData.net_consolidation || []).length === 0 && (
+                                <TableRow>
+                                  <TableCell colSpan={6} align="center" sx={{ py: 4, fontSize: 15.6, color: 'text.secondary' }}>
+                                    No paired net consolidation records found for {selectedSymbol}.
                                   </TableCell>
                                 </TableRow>
-                              ))}
+                              )}
                             </TableBody>
                           </Table>
                         )}

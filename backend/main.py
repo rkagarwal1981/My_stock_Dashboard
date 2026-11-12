@@ -14,7 +14,7 @@ from models.target_category import TargetCategory
 from api.auth import get_password_hash
 from services.importer import scan_and_import_directory, run_trade_pullers, run_holdings_pullers
 from models.audit_log import AuditLog
-from models.watchlist import WatchlistAction, WatchlistManualScript
+from models.watchlist import WatchlistAction, WatchlistManualScript, WatchlistComment
 from models.stock_research import StockNote, StockAttachment
 from models.stock_metadata import StockMetadata
 
@@ -116,6 +116,10 @@ app.include_router(api_router, prefix="/api")
 uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", "stock_research")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/static/research", StaticFiles(directory=uploads_dir), name="research")
+
+screener_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", "screener_snapshots")
+os.makedirs(screener_dir, exist_ok=True)
+app.mount("/static/screener", StaticFiles(directory=screener_dir), name="screener")
 
 @app.get("/")
 def read_root():

@@ -74,9 +74,23 @@ def should_skip_pull(broker: str, force: bool = False) -> bool:
     try:
         with open(CACHE_FILE, "r") as f:
             cache = json.load(f)
-        last_date = cache.get(broker)
-        if last_date == datetime.now().strftime("%Y-%m-%d"):
-            return True
+        last_val = cache.get(broker)
+        if not last_val:
+            return False
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        # Require at least one pull after 07:00 AM today (after EOD backoffice tradebook generation)
+        if last_val.startswith(today_str):
+            if len(last_val) > 10:
+                last_dt = datetime.strptime(last_val, "%Y-%m-%d %H:%M:%S")
+                if last_dt.hour < 7 and now.hour >= 7:
+                    return False
+                return True
+            else:
+                # Legacy date-only string has no timestamp; re-pull once after 07:00 AM to record full timestamp
+                if now.hour >= 7:
+                    return False
+                return True
     except Exception:
         pass
     return False
@@ -89,7 +103,7 @@ def update_cache(broker: str):
                 cache = json.load(f)
         except Exception:
             pass
-    cache[broker] = datetime.now().strftime("%Y-%m-%d")
+    cache[broker] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(CACHE_FILE, "w") as f:
             json.dump(cache, f, indent=2)

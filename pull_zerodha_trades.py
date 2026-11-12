@@ -72,9 +72,23 @@ def should_skip_pull(broker: str, force: bool = False) -> bool:
     try:
         with open(CACHE_FILE, "r") as f:
             cache = json.load(f)
-        last_date = cache.get(broker)
-        if last_date == datetime.now().strftime("%Y-%m-%d"):
-            return True
+        last_val = cache.get(broker)
+        if not last_val:
+            return False
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        # Require at least one pull after 07:00 AM today (after EOD backoffice tradebook generation)
+        if last_val.startswith(today_str):
+            if len(last_val) > 10:
+                last_dt = datetime.strptime(last_val, "%Y-%m-%d %H:%M:%S")
+                if last_dt.hour < 7 and now.hour >= 7:
+                    return False
+                return True
+            else:
+                # Legacy date-only string has no timestamp; re-pull once after 07:00 AM to record full timestamp
+                if now.hour >= 7:
+                    return False
+                return True
     except Exception:
         pass
     return False
@@ -87,7 +101,7 @@ def update_cache(broker: str):
                 cache = json.load(f)
         except Exception:
             pass
-    cache[broker] = datetime.now().strftime("%Y-%m-%d")
+    cache[broker] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(CACHE_FILE, "w") as f:
             json.dump(cache, f, indent=2)
@@ -245,7 +259,15 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
                 
             time.sleep(1)
             
-            # 2. Click "current FY" date filter pill/button
+            # 2. Open date picker and click "current FY" date filter pill/button
+            try:
+                date_inp = page.locator("input[name='date'], .mx-input").first
+                if date_inp.is_visible():
+                    date_inp.click()
+                    time.sleep(0.8)
+            except Exception:
+                pass
+
             current_fy_btn = page.locator(".mx-shortcuts:has-text('current FY'), button:has-text('current FY'), .mx-shortcuts:has-text('Current FY')").first
             if not current_fy_btn.is_visible():
                 current_fy_btn = page.get_by_text("current FY", exact=False).first
@@ -316,7 +338,18 @@ def run_playwright_flow(creds: Dict[str, str]) -> bool:
             try:
                 print("[Zerodha Console] Selecting FO segment for F&O tradebook...")
                 page.locator("select").first.select_option("FO")
-                time.sleep(1)
+                time.sleep(0.8)
+                try:
+                    date_inp_fo = page.locator("input[name='date'], .mx-input").first
+                    if date_inp_fo.is_visible():
+                        date_inp_fo.click()
+                        time.sleep(0.8)
+                    fy_btn_fo = page.locator(".mx-shortcuts:has-text('current FY'), .mx-shortcuts:has-text('Current FY')").first
+                    if fy_btn_fo.is_visible():
+                        fy_btn_fo.click()
+                        time.sleep(0.8)
+                except Exception:
+                    pass
                 submit_btn = page.locator("button[type='submit'], .btn-blue, button.btn-blue, button.submit, button:has-text('Go'), .submit-btn").first
                 if submit_btn.is_visible():
                     submit_btn.click()

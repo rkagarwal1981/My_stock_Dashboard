@@ -9,7 +9,7 @@ echo.
 
 :: 1. Clean up any stale instances on ports 8000 and 5173 or old uvicorn/vite instances
 echo [1/4] Checking ports and cleaning up any stale instances...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports = @(8000, 5173); foreach ($p in $ports) { $procs = Get-NetTCPConnection -LocalPort $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($pidVal in $procs) { if ($pidVal -and $pidVal -gt 0) { Stop-Process -Id $pidVal -Force -ErrorAction SilentlyContinue } } }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*uvicorn main:app*' -or $_.CommandLine -like '*vite*' -or ($_.Name -match 'python' -and $_.CommandLine -like '*Antigravity*backend*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports = @(8000, 5173); foreach ($p in $ports) { $procs = Get-NetTCPConnection -LocalPort $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($pidVal in $procs) { if ($pidVal -and $pidVal -gt 0) { Stop-Process -Id $pidVal -Force -ErrorAction SilentlyContinue } } }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*uvicorn main:app*' -or $_.CommandLine -like '*multiprocessing-fork*' -or $_.CommandLine -like '*vite*' -or ($_.Name -match 'python' -and $_.CommandLine -like '*Antigravity*backend*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 :: 2. Start Backend API
 echo [2/4] Starting Backend API (FastAPI)...

@@ -195,7 +195,7 @@ const OrderBook: React.FC<OrderBookProps> = ({ onViewStock }) => {
     const groups: { [key: string]: any } = {};
 
     orders.forEach((o) => {
-      const key = `${o.script}_${o.buy_sell}`;
+      const key = `${o.broker}_${o.script}_${o.buy_sell}`;
       if (!groups[key]) {
         groups[key] = {
           broker: o.broker,

@@ -272,14 +272,27 @@ def load_all_nifty_fo_transactions() -> Tuple[List[dict], Dict[str, str]]:
     return deduped, expiry_map
 
 
+FO_LTP_CACHE_TTL_SECONDS = 300  # 5 minutes
+_FO_CONTRACT_LTP_CACHE: Dict[str, Tuple[float, float]] = {}  # symbol -> (ltp, timestamp)
+
+
 def fetch_zerodha_nifty_positions(refresh: bool = False) -> Tuple[List[dict], Optional[str]]:
     """
     Fetches Zerodha F&O positions for NIFTY.
-    If refresh=True or cache does not exist, connects to Zerodha KiteConnect API
-    to pull live positions and today's F&O trades.
+    If refresh=True, cache does not exist, or cache is older than 5 minutes (300s),
+    connects to Zerodha KiteConnect API to pull live positions and today's F&O trades.
     Returns: (positions_list, last_synced_iso)
     """
-    should_pull_live = refresh or (not os.path.exists(POSITIONS_CACHE_PATH))
+    cache_expired = False
+    if os.path.exists(POSITIONS_CACHE_PATH):
+        try:
+            age_seconds = time.time() - os.path.getmtime(POSITIONS_CACHE_PATH)
+            if age_seconds >= FO_LTP_CACHE_TTL_SECONDS:
+                cache_expired = True
+        except Exception:
+            pass
+
+    should_pull_live = refresh or (not os.path.exists(POSITIONS_CACHE_PATH)) or cache_expired
 
     if should_pull_live:
         try:
@@ -612,6 +625,8 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
                 "pe_long_strikes": [],
                 "pe_credit_val": 0.0,
                 "pe_debit_val": 0.0,
+                "pe_short_ltp_val": 0.0,
+                "pe_long_ltp_val": 0.0,
                 "pe_pnl": 0.0,
                 "pe_m2m": 0.0,
                 "ce_short_qty": 0,
@@ -622,6 +637,8 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
                 "ce_long_strikes": [],
                 "ce_credit_val": 0.0,
                 "ce_debit_val": 0.0,
+                "ce_short_ltp_val": 0.0,
+                "ce_long_ltp_val": 0.0,
                 "ce_pnl": 0.0,
                 "ce_m2m": 0.0,
             }
@@ -634,11 +651,13 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
                 b["pe_short_lots"] += item["lots"]
                 b["pe_short_strikes"].append(f"{item['strike']} ({int(item['lots'])}L @ ₹{item['average_price']:.0f})")
                 b["pe_credit_val"] += item["premium_value"]
+                b["pe_short_ltp_val"] += item["current_market_value"]
             else:
                 b["pe_long_qty"] += item["abs_quantity"]
                 b["pe_long_lots"] += item["lots"]
                 b["pe_long_strikes"].append(f"{item['strike']} ({int(item['lots'])}L @ ₹{item['average_price']:.0f})")
                 b["pe_debit_val"] += item["premium_value"]
+                b["pe_long_ltp_val"] += item["current_market_value"]
         elif item["option_type"] == "CE":
             b["ce_pnl"] += item["pnl"]
             b["ce_m2m"] += item["m2m"]
@@ -647,11 +666,13 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
                 b["ce_short_lots"] += item["lots"]
                 b["ce_short_strikes"].append(f"{item['strike']} ({int(item['lots'])}L @ ₹{item['average_price']:.0f})")
                 b["ce_credit_val"] += item["premium_value"]
+                b["ce_short_ltp_val"] += item["current_market_value"]
             else:
                 b["ce_long_qty"] += item["abs_quantity"]
                 b["ce_long_lots"] += item["lots"]
                 b["ce_long_strikes"].append(f"{item['strike']} ({int(item['lots'])}L @ ₹{item['average_price']:.0f})")
                 b["ce_debit_val"] += item["premium_value"]
+                b["ce_long_ltp_val"] += item["current_market_value"]
 
     expiry_breakdown = []
     for ec, b in sorted(expiry_buckets.items(), key=lambda kv: kv[1]["expiry_date"]):
@@ -659,6 +680,11 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
         ce_net_credit = b["ce_credit_val"] - b["ce_debit_val"]
         pe_net_pts = round(pe_net_credit / b["pe_short_qty"], 2) if b["pe_short_qty"] > 0 else 0.0
         ce_net_pts = round(ce_net_credit / b["ce_short_qty"], 2) if b["ce_short_qty"] > 0 else 0.0
+
+        pe_net_ltp = b["pe_short_ltp_val"] - b["pe_long_ltp_val"]
+        ce_net_ltp = b["ce_short_ltp_val"] - b["ce_long_ltp_val"]
+        pe_net_ltp_pts = round(pe_net_ltp / b["pe_short_qty"], 2) if b["pe_short_qty"] > 0 else 0.0
+        ce_net_ltp_pts = round(ce_net_ltp / b["ce_short_qty"], 2) if b["ce_short_qty"] > 0 else 0.0
 
         expiry_breakdown.append({
             **b,
@@ -670,6 +696,10 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
             "ce_net_credit_val": round(ce_net_credit, 2),
             "pe_net_credit_pts": pe_net_pts,
             "ce_net_credit_pts": ce_net_pts,
+            "pe_net_ltp_val": round(pe_net_ltp, 2),
+            "ce_net_ltp_val": round(ce_net_ltp, 2),
+            "pe_net_ltp_pts": pe_net_ltp_pts,
+            "ce_net_ltp_pts": ce_net_ltp_pts,
             "total_net_credit_val": round(pe_net_credit + ce_net_credit, 2),
             "total_pnl": round(b["pe_pnl"] + b["ce_pnl"], 2),
             "total_m2m": round(b["pe_m2m"] + b["ce_m2m"], 2),
@@ -712,16 +742,16 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
     if imbalance_lots > 0:
         balance_status = "PE_HEAVY"
         recommendation = (
-            f"PE has {int(pe_short_lots)} short lots ({pe_short_qty:,} Qty) vs "
-            f"CE {int(ce_short_lots)} short lots ({ce_short_qty:,} Qty). "
-            f"Add {int(abs(imbalance_lots))} lots ({abs(imbalance_qty):,} Qty) of CE spread to balance your Iron Condor."
+            f"PE has {int(pe_short_lots)} short lots vs "
+            f"CE {int(ce_short_lots)} short lots. "
+            f"Add {int(abs(imbalance_lots))} lots of CE spread to balance your Iron Condor."
         )
     elif imbalance_lots < 0:
         balance_status = "CE_HEAVY"
         recommendation = (
-            f"CE has {int(ce_short_lots)} short lots ({ce_short_qty:,} Qty) vs "
-            f"PE {int(pe_short_lots)} short lots ({pe_short_qty:,} Qty). "
-            f"Add {int(abs(imbalance_lots))} lots ({abs(imbalance_qty):,} Qty) of PE spread to balance your Iron Condor."
+            f"CE has {int(ce_short_lots)} short lots vs "
+            f"PE {int(pe_short_lots)} short lots. "
+            f"Add {int(abs(imbalance_lots))} lots of PE spread to balance your Iron Condor."
         )
     else:
         balance_status = "BALANCED"
@@ -742,6 +772,9 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
             "buy_qty": int(round(st["buy_qty"])),
             "sell_qty": int(round(st["sell_qty"])),
             "net_qty": int(round(net_q)),
+            "buy_lots": round(st["buy_qty"] / NIFTY_LOT_SIZE, 2),
+            "sell_lots": round(st["sell_qty"] / NIFTY_LOT_SIZE, 2),
+            "net_lots": round(net_q / NIFTY_LOT_SIZE, 2),
             "trade_count": st["trade_count"],
             "first_date": st["first_date"],
             "last_date": st["last_date"],
@@ -792,6 +825,41 @@ def get_nifty_fo_dashboard_data(refresh: bool = False) -> dict:
     }
 
 
+def _get_contract_ltp_5min(sym: str) -> Optional[float]:
+    """
+    Returns the current LTP for a Nifty F&O contract `sym`, cached for 5 minutes (300 seconds).
+    First checks the 5-minute cached positions; if not found there, queries Kite LTP and caches for 5 mins.
+    """
+    now_ts = time.time()
+    cached_entry = _FO_CONTRACT_LTP_CACHE.get(sym)
+    if cached_entry and (now_ts - cached_entry[1]) < FO_LTP_CACHE_TTL_SECONDS:
+        return cached_entry[0]
+
+    positions, _ = fetch_zerodha_nifty_positions(refresh=False)
+    for p in positions:
+        if str(p.get("tradingsymbol") or "").strip().upper() == sym:
+            last_p = float(p.get("last_price") or 0.0)
+            if last_p > 0:
+                _FO_CONTRACT_LTP_CACHE[sym] = (last_p, now_ts)
+                return last_p
+
+    # Fallback: query Kite LTP directly if contract is not in open positions
+    try:
+        kite = get_zerodha_api_client()
+        if kite:
+            key = f"NFO:{sym}"
+            resp = kite.ltp([key])
+            if isinstance(resp, dict) and key in resp:
+                last_p = float(resp[key].get("last_price") or 0.0)
+                if last_p > 0:
+                    _FO_CONTRACT_LTP_CACHE[sym] = (last_p, now_ts)
+                    return last_p
+    except Exception as e:
+        print(f"[FO Service] Could not fetch Kite LTP for {sym}: {e}")
+
+    return cached_entry[0] if cached_entry else None
+
+
 def get_nifty_contract_history(symbol: str) -> dict:
     """
     Returns complete historical transactions, daily aggregated timeline, and
@@ -800,6 +868,7 @@ def get_nifty_contract_history(symbol: str) -> dict:
     sym = (symbol or "").strip().upper()
     all_txs, expiry_map = load_all_nifty_fo_transactions()
     meta = parse_nifty_fo_symbol(sym, known_expiry_date=expiry_map.get(sym))
+    current_ltp = _get_contract_ltp_5min(sym)
 
     contract_txs = [t for t in all_txs if t["symbol"] == sym]
     # Sort ascending by execution_time for cumulative calculations
@@ -898,6 +967,8 @@ def get_nifty_contract_history(symbol: str) -> dict:
         })
 
         if b_qty > 0:
+            b_diff = round(current_ltp - b_price, 2) if (current_ltp is not None and b_price > 0) else None
+            b_diff_pct = round(((current_ltp - b_price) / b_price) * 100.0, 2) if (current_ltp is not None and b_price > 0) else None
             daily_timeline.append({
                 "date": d_str,
                 "buy_sell": "BUY",
@@ -905,9 +976,14 @@ def get_nifty_contract_history(symbol: str) -> dict:
                 "lots": round(b_qty / NIFTY_LOT_SIZE, 2),
                 "price": b_price,
                 "value": b_val,
+                "ltp": current_ltp,
+                "diff": b_diff,
+                "diff_pct": b_diff_pct,
                 "trades_count": dm["buyTrades"],
             })
         if s_qty > 0:
+            s_diff = round(current_ltp - s_price, 2) if (current_ltp is not None and s_price > 0) else None
+            s_diff_pct = round(((current_ltp - s_price) / s_price) * 100.0, 2) if (current_ltp is not None and s_price > 0) else None
             daily_timeline.append({
                 "date": d_str,
                 "buy_sell": "SELL",
@@ -915,10 +991,91 @@ def get_nifty_contract_history(symbol: str) -> dict:
                 "lots": round(s_qty / NIFTY_LOT_SIZE, 2),
                 "price": s_price,
                 "value": s_val,
+                "ltp": current_ltp,
+                "diff": s_diff,
+                "diff_pct": s_diff_pct,
                 "trades_count": dm["sellTrades"],
             })
 
     daily_timeline.sort(key=lambda x: (x["date"], x["buy_sell"]), reverse=True)
+
+    # Build Net Consolidation (netting paired Sell & Buy hedge legs for same expiry_code & option_type by date)
+    spread_date_map: Dict[str, dict] = {}
+    target_exp_code = meta["expiry_code"]
+    target_opt_type = meta["option_type"]
+
+    for t in all_txs:
+        t_meta = parse_nifty_fo_symbol(t["symbol"], known_expiry_date=expiry_map.get(t["symbol"]))
+        if t_meta["expiry_code"] != target_exp_code or t_meta["option_type"] != target_opt_type:
+            continue
+        d_str = t["trade_date"]
+        qty = float(t["quantity"])
+        price = float(t["price"])
+        bs = t["buy_sell"].upper()
+        t_ltp = _get_contract_ltp_5min(t["symbol"])
+
+        if d_str not in spread_date_map:
+            spread_date_map[d_str] = {
+                "sell_qty": 0.0,
+                "sell_val": 0.0,
+                "sell_ltp_num": 0.0,
+                "sell_ltp_den": 0.0,
+                "buy_qty": 0.0,
+                "buy_val": 0.0,
+                "buy_ltp_num": 0.0,
+                "buy_ltp_den": 0.0,
+            }
+        sd = spread_date_map[d_str]
+        if bs == "SELL":
+            sd["sell_qty"] += qty
+            sd["sell_val"] += qty * price
+            if t_ltp is not None:
+                sd["sell_ltp_num"] += qty * t_ltp
+                sd["sell_ltp_den"] += qty
+        elif bs == "BUY":
+            sd["buy_qty"] += qty
+            sd["buy_val"] += qty * price
+            if t_ltp is not None:
+                sd["buy_ltp_num"] += qty * t_ltp
+                sd["buy_ltp_den"] += qty
+
+    net_consolidation = []
+    for d_str in sorted(spread_date_map.keys(), reverse=True):
+        sd = spread_date_map[d_str]
+        s_qty = sd["sell_qty"]
+        b_qty = sd["buy_qty"]
+        if s_qty <= 0 and b_qty <= 0:
+            continue
+        sell_avg = round(sd["sell_val"] / s_qty, 2) if s_qty > 0 else 0.0
+        buy_avg = round(sd["buy_val"] / b_qty, 2) if b_qty > 0 else 0.0
+        sell_ltp = round(sd["sell_ltp_num"] / sd["sell_ltp_den"], 2) if sd["sell_ltp_den"] > 0 else None
+        buy_ltp = round(sd["buy_ltp_num"] / sd["buy_ltp_den"], 2) if sd["buy_ltp_den"] > 0 else None
+
+        lots = round((s_qty if s_qty > 0 else b_qty) / NIFTY_LOT_SIZE, 2)
+        net_avg = round(sell_avg - buy_avg, 2)
+        net_ltp = (
+            round((sell_ltp or 0.0) - (buy_ltp or 0.0), 2)
+            if (sell_ltp is not None or buy_ltp is not None)
+            else None
+        )
+        diff = round(net_avg - net_ltp, 2) if net_ltp is not None else None
+        diff_pct = (
+            round((diff / abs(net_avg)) * 100.0, 2)
+            if (diff is not None and net_avg != 0)
+            else None
+        )
+        net_consolidation.append({
+            "date": d_str,
+            "lots": lots,
+            "sell_avg_price": sell_avg,
+            "buy_avg_price": buy_avg,
+            "net_avg_price": net_avg,
+            "sell_ltp": sell_ltp,
+            "buy_ltp": buy_ltp,
+            "net_ltp": net_ltp,
+            "diff": diff,
+            "diff_pct": diff_pct,
+        })
 
     avg_buy_price = round(total_buy_val / total_buy_qty, 2) if total_buy_qty > 0 else 0.0
     avg_sell_price = round(total_sell_val / total_sell_qty, 2) if total_sell_qty > 0 else 0.0
@@ -932,6 +1089,7 @@ def get_nifty_contract_history(symbol: str) -> dict:
         "strike": meta["strike"],
         "option_type": meta["option_type"],
         "lot_size": NIFTY_LOT_SIZE,
+        "current_ltp": current_ltp,
         "summary": {
             "total_buy_qty": int(round(total_buy_qty)),
             "total_buy_lots": round(total_buy_qty / NIFTY_LOT_SIZE, 2),
@@ -951,6 +1109,7 @@ def get_nifty_contract_history(symbol: str) -> dict:
         },
         "chart_data": chart_data,
         "daily_timeline": daily_timeline,
+        "net_consolidation": net_consolidation,
         "transactions": individual_rows,
     }
 

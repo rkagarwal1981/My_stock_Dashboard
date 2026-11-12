@@ -201,8 +201,28 @@ function App() {
   const targets = useAppSelector((state) => state.portfolio.targets);
   const notifiedTargetIds = useAppSelector((state) => state.portfolio.notifiedTargetIds);
 
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
-  const [selectedStock, setSelectedStock] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('stock')) return 'stock-summary';
+    return params.get('tab') || 'dashboard';
+  });
+  const [selectedStock, setSelectedStock] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('stock') || null;
+  });
+
+  useEffect(() => {
+    if (activeTab === 'stock-summary' && selectedStock) {
+      const cleanName = selectedStock.endsWith('-EQ') ? selectedStock.slice(0, -3) : selectedStock;
+      document.title = `${cleanName} | Stock Summary`;
+    } else if (activeTab === 'watchlist') {
+      document.title = 'Watchlist | Antigravity';
+    } else if (activeTab === 'holdings') {
+      document.title = 'Live Holdings | Antigravity';
+    } else {
+      document.title = 'Antigravity Dashboard';
+    }
+  }, [activeTab, selectedStock]);
 
   const [triggeredDialog, setTriggeredDialog] = useState<{ open: boolean; items: any[] }>({
     open: false,
@@ -442,6 +462,12 @@ function App() {
     setActiveTab('stock-summary');
   }, []);
 
+  // Open Stock Summary detailed view in a new browser tab (used from Watchlist)
+  const handleViewStockInNewTab = useCallback((scrip: string) => {
+    const url = `${window.location.origin}${window.location.pathname}?stock=${encodeURIComponent(scrip)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, []);
+
   if (!isAuthenticated) {
     return (
       <ThemeProvider theme={darkTheme}>
@@ -469,7 +495,7 @@ function App() {
             case 'fo-trading':
               return <FOTrading showToast={showToast} />;
             case 'watchlist':
-              return <Watchlist onViewStock={handleViewStock} showToast={showToast} />;
+              return <Watchlist onViewStock={handleViewStockInNewTab} showToast={showToast} />;
             case 'targets':
               return <TargetSetting onViewStock={handleViewStock} />;
             case 'order-book':
@@ -495,7 +521,7 @@ function App() {
                 <StockSummary 
                   scrip={selectedStock} 
                   onBack={() => setActiveTab('holdings')} 
-                  scripList={allHoldings.map((h: any) => h.script).sort((a: string, b: string) => a.localeCompare(b))}
+                  scripList={Array.from(new Set(allHoldings.map((h: any) => h.script))).sort((a: string, b: string) => a.localeCompare(b))}
                   onSelectScrip={handleViewStock}
                   onRefreshData={() => fetchAllData(false)}
                 />

@@ -23,7 +23,7 @@ from models.executed_order import ExecutedOrder
 from models.target import TargetSetting
 from models.target_category import TargetCategory
 from models.sector_override import SectorAllocationOverride
-from models.watchlist import WatchlistAction, WatchlistManualScript
+from models.watchlist import WatchlistAction, WatchlistManualScript, WatchlistComment
 from models.stock_research import StockNote, StockAttachment
 from services.mutual_fund_engine import MutualFundEngine
 import uuid
@@ -339,9 +339,9 @@ def scan_directory(current_user: User = Depends(get_current_user), db: Session =
             if c.encrypted_api_secret:
                 os.environ[f"{bname}_API_SECRET"] = decrypt_value(c.encrypted_api_secret) or ""
                 
-        # Run background trade sync puller scripts
+        # Run background trade sync puller scripts (force=True on explicit manual scan)
         try:
-            run_trade_pullers()
+            run_trade_pullers(force=True)
         except Exception as ep:
             print("Error running trade pullers during scan:", ep)
             
@@ -454,8 +454,15 @@ def export_holdings(
     db: Session = Depends(get_db)
 ):
     holdings = db.query(Holding).all()
-    
-    holdings = db.query(Holding).all()
+
+    def _norm_scrip(s: str) -> str:
+        raw = str(s or "").strip().upper()
+        return raw[:-3].strip() if raw.endswith("-EQ") else raw
+
+    scrip_counts = {}
+    for h in holdings:
+        k = _norm_scrip(h.script)
+        scrip_counts[k] = scrip_counts.get(k, 0) + 1
 
     # Format data for export
     export_data = []
@@ -494,6 +501,7 @@ def export_holdings(
         export_data.append({
             "Broker": h.broker,
             "Script": h.script,
+            "Count": scrip_counts.get(_norm_scrip(h.script), 1),
             "Quantity": h.quantity,
             "Avg Price": h.avg_price,
             "LTP": h.ltp,
@@ -884,41 +892,15 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
     xirr_val = calculate_xirr(cash_flows) * 100.0
     xirr_val = clean_val(xirr_val) or 0.0
 
-    # Calculate highlight date for most recent open buy transaction picked for LIFO Section 1
+    # Calculate highlight date for most recent open buy transaction using unified LIFO settlement (ignoring broker split)
     highlight_date = None
     highlight_broker = None
     highlight_price = None
-    if txs:
-        # Evaluate per-broker most recent open buy and pick the broker with highest gain_pct (lowest buy price)
-        txs_by_broker = {}
-        for t in txs:
-            b_key = (t.broker or "").strip().lower()
-            if b_key not in txs_by_broker:
-                txs_by_broker[b_key] = []
-            txs_by_broker[b_key].append(t)
-
-        best_candidate = None
-        for b_key, b_txs in txs_by_broker.items():
-            b_settlement = compute_lifo_settlement(b_txs)
-            b_open_buys = [
-                r for r in b_settlement
-                if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None
-            ]
-            if b_open_buys:
-                mr_buy = max(b_open_buys, key=lambda x: x["buy_date"])
-                b_price = mr_buy["price"] or 0.0
-                b_qty = mr_buy["qty"] or 0.0
-                b_gain = ((ltp - b_price) / b_price * 100.0) if b_price > 0 else 0.0
-                b_profit = b_qty * (ltp - b_price) if b_price > 0 else 0.0
-                cand_key = (b_gain, b_profit)
-                if best_candidate is None or cand_key > best_candidate[0]:
-                    best_candidate = (cand_key, mr_buy)
-
-        if best_candidate:
-            most_recent_open_buy = best_candidate[1]
-            highlight_date = most_recent_open_buy["buy_date"].isoformat() if most_recent_open_buy["buy_date"] else None
-            highlight_broker = most_recent_open_buy.get("broker")
-            highlight_price = most_recent_open_buy.get("price")
+    if unsettled_buys:
+        most_recent_open_buy = max(unsettled_buys, key=lambda x: x["buy_date"])
+        highlight_date = most_recent_open_buy["buy_date"].isoformat() if most_recent_open_buy["buy_date"] else None
+        highlight_broker = most_recent_open_buy.get("broker")
+        highlight_price = most_recent_open_buy.get("price")
 
     # Check action checked (expires in 24 hours)
     action_record = db.query(WatchlistAction).filter(
@@ -1102,6 +1084,34 @@ def bg_scrape(broker: str, cred_id: int, db_session_factory):
             holdings = run_dhan_scraper(username, password, pin, totp_key, api_key, api_secret)
         else:
             holdings = []
+
+        # Also pull tradebook (--force) and re-scan/import transactions for this broker
+        try:
+            import subprocess
+            import sys
+            workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            bname_env = broker.upper()
+            os.environ[f"{bname_env}_USERNAME"] = username or ""
+            os.environ[f"{bname_env}_PASSWORD"] = password or ""
+            if pin:
+                os.environ[f"{bname_env}_PIN"] = pin
+            if totp_key:
+                os.environ[f"{bname_env}_TOTP_KEY"] = totp_key
+            if api_key:
+                os.environ[f"{bname_env}_API_KEY"] = api_key
+            if api_secret:
+                os.environ[f"{bname_env}_API_SECRET"] = api_secret
+
+            if broker == "zerodha":
+                subprocess.run([sys.executable, "pull_zerodha_trades.py", "--force"], cwd=workspace_root, check=False)
+            elif broker == "mstock":
+                subprocess.run([sys.executable, "pull_mstock_trades.py", "--force"], cwd=workspace_root, check=False)
+            elif broker == "mstock_ka":
+                subprocess.run([sys.executable, "pull_mstock_trades.py", "--broker", "Mstock_KA", "--force"], cwd=workspace_root, check=False)
+
+            scan_and_import_directory(db)
+        except Exception as e_tr:
+            print(f"Error syncing tradebook during {broker} scrape: {e_tr}")
             
         if automation_states[broker]["status"] == "SUCCESS" and holdings:
             # Clear previous holdings for this broker (using exact database capitalization)
@@ -4021,6 +4031,9 @@ def get_watchlist_section1(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    WatchlistComment.__table__.create(bind=engine, checkfirst=True)
+    comments_map = {c.script: c.comment for c in db.query(WatchlistComment).all()}
+
     latest_orders = get_today_latest_orders_by_script(db)
     holdings = db.query(Holding).all()
     if not holdings:
@@ -4035,56 +4048,63 @@ def get_watchlist_section1(
     except Exception as e:
         print(f"Error fetching live prices for section1 watchlist: {e}")
         
-    # Bulk-load all transactions for active holdings, grouped by (script, broker_lower)
-    all_txs = db.query(Transaction).filter(Transaction.script.in_(scrips)).all()
-    txs_by_script_broker = {}
+    # Bulk-load all transactions for active holdings, grouped by script (unified LIFO across brokers)
+    unique_scrips = list(dict.fromkeys(scrips))
+    all_txs = db.query(Transaction).filter(Transaction.script.in_(unique_scrips)).all()
+    txs_by_script = {}
     for t in all_txs:
-        key = (t.script, (t.broker or "").strip().lower())
-        if key not in txs_by_script_broker:
-            txs_by_script_broker[key] = []
-        txs_by_script_broker[key].append(t)
+        if t.script not in txs_by_script:
+            txs_by_script[t.script] = []
+        txs_by_script[t.script].append(t)
 
-    best_by_script = {}
+    holdings_by_script = {}
     for h in holdings:
-        script = h.script
+        if h.script not in holdings_by_script:
+            holdings_by_script[h.script] = []
+        holdings_by_script[h.script].append(h)
+
+    results = []
+    for script, script_holdings in holdings_by_script.items():
         is_manual = script in manual_scripts
-        if (h.quantity is None or h.quantity <= 0) and not is_manual:
+        active_holdings = [h for h in script_holdings if h.quantity is not None and h.quantity > 0]
+        if not active_holdings and not is_manual:
             continue
-        
-        ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else h.ltp
+
+        ref_h = active_holdings[0] if active_holdings else script_holdings[0]
+        ltp = live_prices[script]["price"] if (script in live_prices and live_prices[script]["price"] > 0) else ref_h.ltp
         change_pct = live_prices[script]["change_pct"] if (script in live_prices) else 0.0
         if ltp is None or ltp == 0:
-            ltp = h.avg_price
-            
-        # Get transactions for (script, broker) from bulk-loaded map
-        broker_key = (script, (h.broker or "").strip().lower())
-        txs = txs_by_script_broker.get(broker_key, [])
-        
+            ltp = ref_h.avg_price
+
+        txs = txs_by_script.get(script, [])
+
         open_buys = []
         if txs:
             settlement = compute_lifo_settlement(txs)
             open_buys = [r for r in settlement if r.get("comment") == "Unsettled" and r.get("type") == "Buy" and r.get("buy_date") is not None]
-            
+
         if not open_buys:
             if not is_manual:
                 continue
             buying_date = None
-            buying_price = h.avg_price
-            remaining_qty = h.quantity
+            buying_price = ref_h.avg_price
+            remaining_qty = ref_h.quantity
+            broker = ref_h.broker
             is_partial = False
         else:
             most_recent_open_buy = max(open_buys, key=lambda x: x["buy_date"])
             buying_date = most_recent_open_buy["buy_date"]
             buying_price = most_recent_open_buy["price"]
             remaining_qty = most_recent_open_buy["qty"]
-            
+            broker = most_recent_open_buy.get("broker") or ref_h.broker
+
             orig_lot_qty = sum(
-                t.quantity for t in txs 
-                if t.buy_sell.upper() == 'BUY' 
-                and t.transaction_date.date() == buying_date.date() 
-                and abs(t.price - buying_price) < 0.01
+                t.quantity for t in txs
+                if t.buy_sell.upper() == 'BUY'
+                and t.transaction_date.date() == buying_date.date()
+                and (t.broker or "").strip().lower() == (broker or "").strip().lower()
             )
-                    
+
             is_partial = False
             if orig_lot_qty > 0 and remaining_qty < orig_lot_qty:
                 is_partial = True
@@ -4092,17 +4112,26 @@ def get_watchlist_section1(
         gain = 0.0
         if buying_price and buying_price > 0:
             gain = ((ltp - buying_price) / buying_price) * 100.0
-            
+
         if gain >= 4.0 or is_manual:
             value = remaining_qty * ltp
+            total_script_qty = (
+                sum(b["qty"] for b in open_buys)
+                if open_buys
+                else sum(h.quantity for h in active_holdings if h.quantity)
+            )
+            total_market_value = int(total_script_qty * ltp) if total_script_qty > 0 else 0
+            lot_value_pct = round((value / (total_script_qty * ltp)) * 100.0, 1) if (total_script_qty * ltp) > 0 else 0.0
             potential_profit = remaining_qty * (ltp - buying_price) if buying_price else 0.0
-            
+
             action_checked, action_type = resolve_watchlist_action(script, 'section1', latest_orders, db)
-            
-            candidate = {
+
+            results.append({
                 "buying_date": buying_date,
                 "script": script,
-                "broker": h.broker,
+                "broker": broker,
+                "total_market_value": total_market_value,
+                "lot_value_pct": lot_value_pct,
                 "buying_price": buying_price,
                 "change_in_ltp_pct": change_pct,
                 "ltp": ltp,
@@ -4113,20 +4142,323 @@ def get_watchlist_section1(
                 "action_checked": action_checked,
                 "action_type": action_type,
                 "tag_type": "MANUAL" if is_manual else "AUTOMATED",
-                "is_partial": is_partial
-            }
-            
-            # Keep only unique stock name, picking the broker with the maximum %age Gain (tie-broken by potential_profit)
-            if script not in best_by_script:
-                best_by_script[script] = candidate
-            else:
-                existing_cand = best_by_script[script]
-                if (candidate["gain_pct"], candidate["potential_profit"]) > (existing_cand["gain_pct"], existing_cand["potential_profit"]):
-                    best_by_script[script] = candidate
-            
-    results = list(best_by_script.values())
+                "is_partial": is_partial,
+                "comment": comments_map.get(script, "")
+            })
+
     results.sort(key=lambda x: x["gain_pct"], reverse=True)
     return results
+
+
+class WatchlistCommentRequest(BaseModel):
+    script: str
+    comment: str
+
+
+@router.put("/watchlist/comment")
+@router.post("/watchlist/comment")
+def save_watchlist_comment(
+    req: WatchlistCommentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    WatchlistComment.__table__.create(bind=engine, checkfirst=True)
+    script_clean = (req.script or "").strip()
+    comment_clean = (req.comment or "").strip()
+    existing = db.query(WatchlistComment).filter(
+        WatchlistComment.script == script_clean
+    ).first()
+    if comment_clean:
+        if existing:
+            existing.comment = comment_clean
+        else:
+            db.add(WatchlistComment(script=script_clean, comment=comment_clean))
+    else:
+        if existing:
+            db.delete(existing)
+    db.commit()
+    return {"success": True, "script": script_clean, "comment": comment_clean}
+
+
+class WatchlistSection1ExportRequest(BaseModel):
+    rows: Optional[List[dict]] = None
+
+
+@router.post("/watchlist/section1/export")
+@router.get("/watchlist/section1/export")
+def export_watchlist_section1(
+    req: Optional[WatchlistSection1ExportRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        rows_data = req.rows if (req and req.rows is not None) else get_watchlist_section1(current_user=current_user, db=db)
+        export_data = []
+        for r in rows_data:
+            raw_script = str(r.get("script") or "").split("|")[0].strip()
+            clean_ticker = raw_script[:-3] if raw_script.upper().endswith("-EQ") else raw_script
+            stock_display = f"{clean_ticker} | Partially Settled" if r.get("is_partial") else clean_ticker
+            b_date = r.get("buying_date")
+            if b_date:
+                b_date_str = str(b_date)[:10]
+            else:
+                b_date_str = ""
+            export_data.append({
+                "Broker": r.get("broker") or "",
+                "Stock Name": stock_display,
+                "Total Market Value": int(float(r.get("total_market_value") or 0)),
+                "Lot Value %age": round(float(r.get("lot_value_pct") or 0.0), 1),
+                "TradingView Symbol": clean_ticker,
+                "Buying Date": b_date_str,
+                "Target Lot Buying Price": round(float(r.get("buying_price") or 0.0), 2),
+                "LTP chg %": round(float(r.get("change_in_ltp_pct") or 0.0), 2),
+                "LTP": round(float(r.get("ltp") or 0.0), 2),
+                "%age Gain": round(float(r.get("gain_pct") or 0.0), 2),
+                "Remaining Lot Qty": r.get("quantity") or 0,
+                "Remaining Lot Value": round(float(r.get("value") or 0.0), 2),
+                "Potential Profit (for this lot only)": round(float(r.get("potential_profit") or 0.0), 2),
+                "Action (24h)": "Checked" if r.get("action_checked") else "Pending",
+                "Options": "MANUAL" if r.get("tag_type") == "MANUAL" else "Auto",
+                "Comments": r.get("comment") or ""
+            })
+
+        df = pd.DataFrame(export_data)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="LIFO_Profit_Booker", index=False)
+        output.seek(0)
+        response = StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response.headers["Content-Disposition"] = "attachment; filename=Watchlist_LIFO_Profit_Booker.xlsx"
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Screener.in Valuation Snapshot & Link Endpoints ---
+SCREENER_SNAPSHOT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "uploads",
+    "screener_snapshots"
+)
+os.makedirs(SCREENER_SNAPSHOT_DIR, exist_ok=True)
+SCREENER_CACHE_MAX_AGE_SECONDS = 90 * 86400  # 90 days (~3 months)
+
+
+def _clean_screener_symbol(script: str) -> str:
+    sym = str(script or "").split("|")[0].strip().upper()
+    if sym.endswith("-EQ"):
+        sym = sym[:-3].strip()
+    # Keep only safe ticker characters
+    sym = "".join(ch for ch in sym if ch.isalnum() or ch in ("-", "&", "_"))
+    return sym
+
+
+def _get_screener_snapshot_meta(sym: str) -> dict:
+    chart_file = f"{sym}_chart.png"
+    peers_file = f"{sym}_peers.png"
+    chart_path = os.path.join(SCREENER_SNAPSHOT_DIR, chart_file)
+    peers_path = os.path.join(SCREENER_SNAPSHOT_DIR, peers_file)
+    screener_url = f"https://www.screener.in/company/{sym}/"
+
+    if os.path.exists(chart_path) and os.path.exists(peers_path):
+        mtime = min(os.path.getmtime(chart_path), os.path.getmtime(peers_path))
+        age_sec = max(0.0, datetime.now().timestamp() - mtime)
+        age_days = round(age_sec / 86400.0, 1)
+        is_fresh = age_sec < SCREENER_CACHE_MAX_AGE_SECONDS
+        captured_at = datetime.fromtimestamp(mtime).strftime("%d %b %Y, %I:%M %p")
+        ts = int(mtime)
+        return {
+            "exists": True,
+            "is_fresh": is_fresh,
+            "symbol": sym,
+            "screener_url": screener_url,
+            "chart_url": f"/api/watchlist/screener/image/{chart_file}?t={ts}",
+            "peers_url": f"/api/watchlist/screener/image/{peers_file}?t={ts}",
+            "captured_at": captured_at,
+            "age_days": age_days,
+        }
+    return {
+        "exists": False,
+        "is_fresh": False,
+        "symbol": sym,
+        "screener_url": screener_url,
+        "chart_url": None,
+        "peers_url": None,
+        "captured_at": None,
+        "age_days": None,
+    }
+
+
+def _capture_screener_for_symbol(page, sym: str) -> dict:
+    screener_url = f"https://www.screener.in/company/{sym}/"
+    chart_path = os.path.join(SCREENER_SNAPSHOT_DIR, f"{sym}_chart.png")
+    peers_path = os.path.join(SCREENER_SNAPSHOT_DIR, f"{sym}_peers.png")
+
+    page.goto(screener_url, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_selector("#chart", timeout=15000)
+    page.wait_for_timeout(800)
+
+    # Switch chart to PE Ratio (shows Quarterly/TTM EPS bars + PE line) and 3Yr view
+    try:
+        pe_btn = page.get_by_role("button", name="PE Ratio").first
+        if pe_btn.is_visible():
+            pe_btn.click()
+            page.wait_for_timeout(700)
+    except Exception:
+        pass
+
+    try:
+        yr3_btn = page.get_by_role("button", name="3Yr").first
+        if yr3_btn.is_visible():
+            yr3_btn.click()
+            page.wait_for_timeout(900)
+    except Exception:
+        pass
+
+    # Dismiss any floating cookie/login banner if present so screenshot is clean
+    try:
+        page.evaluate("""() => {
+            const modals = document.querySelectorAll('.modal, .cookie-banner, [data-Automatic]');
+            modals.forEach(el => el.remove());
+        }""")
+    except Exception:
+        pass
+
+    chart_loc = page.locator("#chart").first
+    chart_loc.scroll_into_view_if_needed()
+    page.wait_for_timeout(500)
+    chart_loc.screenshot(path=chart_path)
+
+    peers_loc = page.locator("#peers").first
+    if peers_loc.count() > 0:
+        peers_loc.scroll_into_view_if_needed()
+        page.wait_for_timeout(600)
+        peers_loc.screenshot(path=peers_path)
+
+    return _get_screener_snapshot_meta(sym)
+
+
+@router.get("/watchlist/screener/image/{filename}")
+def get_screener_snapshot_image(filename: str):
+    safe_name = os.path.basename(filename)
+    if not safe_name.endswith(".png"):
+        raise HTTPException(status_code=400, detail="Invalid image filename")
+    full_path = os.path.join(SCREENER_SNAPSHOT_DIR, safe_name)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Snapshot image not found")
+    return FileResponse(full_path, media_type="image/png")
+
+
+class ScreenerBatchRequest(BaseModel):
+    scripts: List[str]
+    force: bool = False
+
+
+@router.post("/watchlist/screener/batch")
+def capture_screener_snapshots_batch(
+    req: ScreenerBatchRequest,
+    current_user: User = Depends(get_current_user)
+):
+    import sys
+    import asyncio
+    from playwright.sync_api import sync_playwright
+
+    symbols = []
+    for s in (req.scripts or []):
+        clean = _clean_screener_symbol(s)
+        if clean and clean not in symbols:
+            symbols.append(clean)
+
+    to_capture = []
+    results = {}
+    for sym in symbols:
+        meta = _get_screener_snapshot_meta(sym)
+        if not req.force and meta["exists"] and meta["is_fresh"]:
+            results[sym] = {**meta, "status": "cached"}
+        else:
+            to_capture.append(sym)
+
+    if to_capture:
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                page = context.new_page()
+                for sym in to_capture:
+                    try:
+                        meta = _capture_screener_for_symbol(page, sym)
+                        results[sym] = {**meta, "status": "captured"}
+                    except Exception as e:
+                        results[sym] = {
+                            "exists": False,
+                            "symbol": sym,
+                            "screener_url": f"https://www.screener.in/company/{sym}/",
+                            "status": "error",
+                            "error": str(e),
+                        }
+                browser.close()
+        finally:
+            loop.close()
+
+    return {
+        "total": len(symbols),
+        "captured_count": sum(1 for v in results.values() if v.get("status") == "captured"),
+        "cached_count": sum(1 for v in results.values() if v.get("status") == "cached"),
+        "results": results,
+    }
+
+
+@router.get("/watchlist/screener/{script}")
+def get_or_capture_screener_snapshot(
+    script: str,
+    force: bool = False,
+    current_user: User = Depends(get_current_user)
+):
+    import sys
+    import asyncio
+    from playwright.sync_api import sync_playwright
+
+    sym = _clean_screener_symbol(script)
+    if not sym:
+        raise HTTPException(status_code=400, detail="Invalid stock symbol")
+
+    meta = _get_screener_snapshot_meta(sym)
+    if not force and meta["exists"] and meta["is_fresh"]:
+        return {**meta, "status": "cached"}
+
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1440, "height": 1000})
+            page = context.new_page()
+            meta = _capture_screener_for_symbol(page, sym)
+            browser.close()
+        if not meta["exists"]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not capture Screener.in sections for {sym}. Check if {sym} is listed on Screener.in."
+            )
+        return {**meta, "status": "captured"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to capture Screener.in snapshot for {sym}: {str(e)}"
+        )
+    finally:
+        loop.close()
 
 @router.get("/watchlist/section2")
 def get_watchlist_section2(

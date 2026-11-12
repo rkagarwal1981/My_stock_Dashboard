@@ -17,3 +17,10 @@ class WatchlistManualScript(Base):
     script = Column(String, index=True, nullable=False)
     tag_type = Column(String, default="MANUAL", nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
+
+class WatchlistComment(Base):
+    __tablename__ = "watchlist_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    script = Column(String, unique=True, index=True, nullable=False)
+    comment = Column(String, nullable=False, default="")
