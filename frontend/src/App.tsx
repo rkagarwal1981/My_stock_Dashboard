@@ -33,6 +33,7 @@ const Watchlist = lazy(() => import('./pages/Watchlist'));
 const HoldingAnalysis = lazy(() => import('./pages/HoldingAnalysis'));
 const ExpensesInterest = lazy(() => import('./pages/ExpensesInterest'));
 const FOTrading = lazy(() => import('./pages/FOTrading'));
+const LatestNews = lazy(() => import('./pages/LatestNews'));
 
 // Material UI components
 import {
@@ -83,6 +84,7 @@ import PieChartIcon from '@mui/icons-material/PieChart';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import CandlestickChartIcon from '@mui/icons-material/CandlestickChart';
+import NewspaperIcon from '@mui/icons-material/Newspaper';
 
 const drawerWidth = 260;
 
@@ -494,6 +496,8 @@ function App() {
               return <Holdings onViewStock={handleViewStock} onScrape={triggerScrape} showToast={showToast} />;
             case 'fo-trading':
               return <FOTrading showToast={showToast} />;
+            case 'latest-news':
+              return <LatestNews onViewStock={handleViewStockInNewTab} showToast={showToast} />;
             case 'watchlist':
               return <Watchlist onViewStock={handleViewStockInNewTab} showToast={showToast} />;
             case 'targets':
@@ -558,6 +562,8 @@ function App() {
                 ? `Details: ${selectedStock}`
                 : activeTab === 'fo-trading'
                 ? 'F&O TRADING (NIFTY - ZERODHA)'
+                : activeTab === 'latest-news'
+                ? 'LATEST NEWS (LIVE HOLDINGS)'
                 : activeTab.toUpperCase()}
             </Typography>
 
@@ -619,6 +625,7 @@ function App() {
             {[
               { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
               { id: 'holdings', text: 'Live Holdings', icon: <AccountBalanceWalletIcon /> },
+              { id: 'latest-news', text: 'Latest News', icon: <NewspaperIcon /> },
               { id: 'fo-trading', text: 'F&O Trading (Nifty)', icon: <CandlestickChartIcon /> },
               { id: 'holding-analysis', text: 'Holding Analysis', icon: <PieChartIcon /> },
               { id: 'targets', text: 'Target Setting', icon: <TrackChangesIcon /> },

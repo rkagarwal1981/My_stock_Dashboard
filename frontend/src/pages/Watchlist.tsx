@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
+import { useAppSelector } from '../store';
 import {
   Box, Typography, Card, CardContent, Grid, Button,
   CircularProgress, Chip, Table, TableBody, TableCell, TableHead, TableRow,
   IconButton, Tooltip, Checkbox, Slider, Tabs, Tab, TextField,
   Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
-  TableSortLabel, Menu, MenuItem, Dialog, DialogTitle, DialogContent
+  TableSortLabel, Menu, MenuItem, Dialog, DialogTitle, DialogContent, Popover
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -44,6 +45,7 @@ interface ColumnDef {
 
 const SECTION1_COLUMNS: ColumnDef[] = [
   { label: 'Broker', field: 'broker', type: 'string' },
+  { label: 'Mutual Funds', field: 'mf_badge', type: 'string' },
   { label: 'Stock Name', field: 'script', type: 'string', minWidth: 260, width: '20%' },
   { label: 'Total Market Value', field: 'total_market_value', type: 'number' },
   { label: 'Lot Value %age', field: 'lot_value_pct', type: 'number' },
@@ -104,6 +106,10 @@ const SECTION4_COLUMNS: ColumnDef[] = [
 ];
 
 const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
+  const allHoldings = useAppSelector((state) => state.portfolio.holdings);
+  const [popoverAnchor, setPopoverAnchor] = useState<HTMLElement | null>(null);
+  const [popoverData, setPopoverData] = useState<any[]>([]);
+  const [popoverStock, setPopoverStock] = useState<string>('');
   const [activeTab, setActiveTab] = useState(0);
   const [section1Data, setSection1Data] = useState<any[]>([]);
   const [section2Data, setSection2Data] = useState<{ top_movers: any[]; bottom_movers: any[] }>({
@@ -467,8 +473,38 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const fmt = (v: number | null) =>
     v != null ? `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—';
 
+  const holdingsMfMap = useMemo(() => {
+    const map: Record<string, { mf_badge: string | null; mutual_funds: any[] }> = {};
+    for (const h of allHoldings || []) {
+      const raw = String(h.script || '').trim().toUpperCase();
+      const base = raw.endsWith('-EQ') ? raw.slice(0, -3).trim() : raw;
+      if (h.mutual_funds && h.mutual_funds.length > 0) {
+        map[raw] = { mf_badge: h.mf_badge || null, mutual_funds: h.mutual_funds };
+        map[base] = { mf_badge: h.mf_badge || null, mutual_funds: h.mutual_funds };
+      }
+    }
+    return map;
+  }, [allHoldings]);
+
+  const enrichedSection1Data = useMemo(() => {
+    return section1Data.map(row => {
+      if (row.mutual_funds && row.mutual_funds.length > 0) return row;
+      const raw = String(row.script || '').split('|')[0].trim().toUpperCase();
+      const base = raw.endsWith('-EQ') ? raw.slice(0, -3).trim() : raw;
+      const mfInfo = holdingsMfMap[raw] || holdingsMfMap[base];
+      if (mfInfo) {
+        return {
+          ...row,
+          mf_badge: row.mf_badge || mfInfo.mf_badge,
+          mutual_funds: mfInfo.mutual_funds
+        };
+      }
+      return row;
+    });
+  }, [section1Data, holdingsMfMap]);
+
   // Filtered & sorted rows for each table
-  const displaySection1 = applyFilterAndSort(section1Data, 'section1', SECTION1_COLUMNS);
+  const displaySection1 = applyFilterAndSort(enrichedSection1Data, 'section1', SECTION1_COLUMNS);
   const displaySection2Top = applyFilterAndSort(section2Data.top_movers, 'section2_top', SECTION2_COLUMNS);
   const displaySection2Bottom = applyFilterAndSort(section2Data.bottom_movers, 'section2_bottom', SECTION2_COLUMNS);
   const displaySection3Top = applyFilterAndSort(section3Data.top_movers, 'section3_top', SECTION3_COLUMNS);
@@ -638,6 +674,105 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
           </IconButton>
         </Tooltip>
       </Box>
+    );
+  };
+
+  const renderMutualFundsCell = (row: any) => {
+    const funds = row.mutual_funds || [];
+    if (funds.length === 0) return <span style={{ color: '#64748b' }}>—</span>;
+
+    const FUND_CODE_TO_OFFICIAL_NAME: Record<string, string> = {
+      H: 'HDFC Flexi Cap Fund',
+      P: 'Parag Parikh Flexi Cap Fund',
+      Q: 'Quant Flexi Cap Fund',
+      J: 'JM Flexicap Fund',
+      HV: 'HDFC Value Fund',
+      HS: 'HSBC Value Fund',
+      IC: 'ICICI Value Fund'
+    };
+
+    const flexiFunds = funds.filter(
+      (m: any) => m.mf_category === 'Flexicap' || ['H', 'P', 'Q', 'J'].includes(m.fund_code)
+    );
+    const valueFunds = funds.filter(
+      (m: any) => m.mf_category === 'Value' || ['HV', 'HS', 'IC'].includes(m.fund_code)
+    );
+
+    const fCount = new Set(flexiFunds.map((m: any) => m.fund_code || m.fund_name)).size;
+    const vCount = new Set(valueFunds.map((m: any) => m.fund_code || m.fund_name)).size;
+
+    const parts: string[] = [];
+    if (fCount > 0) parts.push(`F${fCount}`);
+    if (vCount > 0) parts.push(`V${vCount}`);
+    const badgeText = row.mf_badge || (parts.length > 0 ? parts.join('|') : '—');
+
+    if (badgeText === '—' || parts.length === 0) {
+      return <span style={{ color: '#64748b' }}>—</span>;
+    }
+
+    const tooltipContent = (
+      <Box sx={{ p: 0.5, maxWidth: 300 }}>
+        {fCount > 0 && (
+          <Box sx={{ mb: vCount > 0 ? 1 : 0 }}>
+            <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, color: '#38bdf8' }}>
+              Flexicap ({fCount}):
+            </Typography>
+            {flexiFunds.map((m: any) => (
+              <Typography
+                key={m.fund_code}
+                variant="caption"
+                sx={{ display: 'block', pl: 1, color: '#e2e8f0', fontSize: 11 }}
+              >
+                • {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name} ({m.fund_code})
+              </Typography>
+            ))}
+          </Box>
+        )}
+        {vCount > 0 && (
+          <Box>
+            <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, color: '#c084fc' }}>
+              Value ({vCount}):
+            </Typography>
+            {valueFunds.map((m: any) => (
+              <Typography
+                key={m.fund_code}
+                variant="caption"
+                sx={{ display: 'block', pl: 1, color: '#e2e8f0', fontSize: 11 }}
+              >
+                • {FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name} ({m.fund_code})
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </Box>
+    );
+
+    return (
+      <Tooltip title={tooltipContent} arrow>
+        <span
+          style={{
+            cursor: 'pointer',
+            color: '#a78bfa',
+            fontWeight: 700,
+            padding: '2px 8px',
+            borderRadius: '4px',
+            background: 'rgba(167, 139, 250, 0.14)',
+            border: '1px solid rgba(167, 139, 250, 0.3)',
+            display: 'inline-block',
+            textAlign: 'center',
+            letterSpacing: '0.5px',
+            fontSize: '12px'
+          }}
+          onClick={e => {
+            e.stopPropagation();
+            setPopoverAnchor(e.currentTarget);
+            setPopoverData(funds);
+            setPopoverStock(row.script);
+          }}
+        >
+          {badgeText}
+        </span>
+      </Tooltip>
     );
   };
 
@@ -818,6 +953,9 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     height: 20
                                   }}
                                 />
+                              </TableCell>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43', fontSize: 12, whiteSpace: 'nowrap' }}>
+                                {renderMutualFundsCell(row)}
                               </TableCell>
                               <TableCell
                                 sx={{
@@ -2091,6 +2229,191 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Mutual Funds popover for compact details (same as Live Holdings) */}
+      <Popover
+        open={Boolean(popoverAnchor)}
+        anchorEl={popoverAnchor}
+        onClose={() => {
+          setPopoverAnchor(null);
+          setPopoverData([]);
+          setPopoverStock('');
+        }}
+        anchorOrigin={{
+          vertical: 'bottom',
+          horizontal: 'center'
+        }}
+        transformOrigin={{
+          vertical: 'top',
+          horizontal: 'center'
+        }}
+        slotProps={{
+          paper: {
+            sx: {
+              bgcolor: '#161824',
+              border: '1px solid #2a2e43',
+              borderRadius: 2,
+              p: 2,
+              minWidth: 780,
+              boxShadow: '0px 8px 24px rgba(0, 0, 0, 0.5)'
+            }
+          }
+        }}
+      >
+        <Box>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, color: '#8b5cf6' }}>
+            Mutual Fund Activity:{' '}
+            {popoverStock &&
+              (popoverStock.endsWith('-EQ')
+                ? popoverStock.substring(0, popoverStock.length - 3)
+                : popoverStock)}
+          </Typography>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  Category
+                </TableCell>
+                <TableCell sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  Fund
+                </TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  Holding (Cr)
+                </TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  1M Change
+                </TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  2M Change
+                </TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  3M Change
+                </TableCell>
+                <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  3M Trend
+                </TableCell>
+                <TableCell align="center" sx={{ color: 'text.secondary', fontWeight: 600, py: 0.5, borderBottom: '1px solid #2a2e43' }}>
+                  Portfolio Signal
+                </TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {popoverData.map((m: any) => {
+                const FUND_CODE_TO_OFFICIAL_NAME: Record<string, string> = {
+                  H: 'HDFC Flexi Cap',
+                  P: 'Parag Parikh',
+                  Q: 'Quant Flexi Cap',
+                  J: 'JM Flexicap',
+                  HV: 'HDFC Value',
+                  HS: 'HSBC Value',
+                  IC: 'ICICI Value'
+                };
+                const fundDisplayName = FUND_CODE_TO_OFFICIAL_NAME[m.fund_code] || m.fund_name;
+                const latestVal = m.latest_value;
+                const category =
+                  m.mf_category || (['HV', 'HS', 'IC'].includes(m.fund_code) ? 'Value' : 'Flexicap');
+                const isValue = category === 'Value';
+
+                const renderChangeEl = (change: number, pct: number) => {
+                  if (change > 0.0001) {
+                    return (
+                      <span style={{ color: '#10b981', fontWeight: 600 }}>
+                        ▲ {Math.round(change)} ({pct >= 0 ? '+' : ''}
+                        {Math.round(pct)}%)
+                      </span>
+                    );
+                  } else if (change < -0.0001) {
+                    return (
+                      <span style={{ color: '#ef4444', fontWeight: 600 }}>
+                        ▼ {Math.round(Math.abs(change))} ({Math.round(pct)}%)
+                      </span>
+                    );
+                  }
+                  return <span style={{ color: '#64748b' }}>0</span>;
+                };
+
+                let trendColor = '#3b82f6';
+                if (m.trend_3m === 'Accumulating') trendColor = '#10b981';
+                if (m.trend_3m === 'Reducing') trendColor = '#ef4444';
+                if (m.trend_3m === 'New Entry') trendColor = '#059669';
+
+                let signalColor = '#64748b';
+                if (m.portfolio_signal === 'New Entry') signalColor = '#059669';
+                else if (m.portfolio_signal === 'Strong Accumulation') signalColor = '#10b981';
+                else if (m.portfolio_signal === 'Accumulating') signalColor = '#34d399';
+                else if (m.portfolio_signal === 'Strong Reduction') signalColor = '#ef4444';
+                else if (m.portfolio_signal === 'Reducing') signalColor = '#f87171';
+                else if (m.portfolio_signal === 'Stable Holding') signalColor = '#3b82f6';
+                else if (m.portfolio_signal === 'Active') signalColor = '#f59e0b';
+
+                return (
+                  <TableRow key={m.fund_code}>
+                    <TableCell sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      <Chip
+                        label={category}
+                        size="small"
+                        sx={{
+                          bgcolor: isValue ? 'rgba(192, 132, 252, 0.15)' : 'rgba(56, 189, 248, 0.15)',
+                          color: isValue ? '#c084fc' : '#38bdf8',
+                          border: `1px solid ${
+                            isValue ? 'rgba(192, 132, 252, 0.3)' : 'rgba(56, 189, 248, 0.3)'
+                          }`,
+                          fontWeight: 700,
+                          fontSize: 10,
+                          height: 20
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)', fontWeight: 600 }}>
+                      {fundDisplayName}
+                    </TableCell>
+                    <TableCell align="right" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      {Math.round(latestVal)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      {renderChangeEl(m.change_1m, m.change_1m_pct)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      {renderChangeEl(m.change_2m, m.change_2m_pct)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      {renderChangeEl(m.change_3m, m.change_3m_pct)}
+                    </TableCell>
+                    <TableCell align="center" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      <Chip
+                        label={m.trend_3m}
+                        size="small"
+                        sx={{
+                          bgcolor: `${trendColor}22`,
+                          color: trendColor,
+                          border: `1px solid ${trendColor}33`,
+                          fontWeight: 700,
+                          fontSize: 9,
+                          height: 18
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell align="center" sx={{ py: 1, borderBottom: '1px solid rgba(42,46,67,0.3)' }}>
+                      <Chip
+                        label={m.portfolio_signal || 'Active'}
+                        size="small"
+                        sx={{
+                          bgcolor: `${signalColor}22`,
+                          color: signalColor,
+                          border: `1px solid ${signalColor}33`,
+                          fontWeight: 700,
+                          fontSize: 9,
+                          height: 18
+                        }}
+                      />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </Box>
+      </Popover>
     </Box>
   );
 };

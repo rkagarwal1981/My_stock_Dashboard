@@ -4063,6 +4063,24 @@ def get_watchlist_section1(
             holdings_by_script[h.script] = []
         holdings_by_script[h.script].append(h)
 
+    # Compute Mutual Funds matches for all holdings scripts
+    mf_matches = {}
+    try:
+        live_holdings_dicts = [
+            {
+                "script": h.script,
+                "broker": h.broker,
+                "quantity": h.quantity,
+                "avg_price": h.avg_price,
+                "ltp": h.ltp,
+            }
+            for h in holdings
+        ]
+        mf_matches = mf_engine.get_matching_funds_for_holdings(live_holdings_dicts)
+    except Exception as e_mf:
+        print(f"Error computing MF matches for watchlist section1: {e_mf}")
+    order_map = {"H": 0, "P": 1, "Q": 2, "J": 3, "HV": 4, "HS": 5, "IC": 6}
+
     results = []
     for script, script_holdings in holdings_by_script.items():
         is_manual = script in manual_scripts
@@ -4126,10 +4144,42 @@ def get_watchlist_section1(
 
             action_checked, action_type = resolve_watchlist_action(script, 'section1', latest_orders, db)
 
+            scrip_matches = list(mf_matches.get(script, []))
+            scrip_matches.sort(key=lambda x: order_map.get(x["fund_code"], 99))
+            cleaned_matches = []
+            for m in scrip_matches:
+                cleaned_matches.append({
+                    "fund_code": m["fund_code"],
+                    "fund_name": m["fund_name"],
+                    "mf_category": m.get("mf_category") or ("Value" if m["fund_code"] in ["HV", "HS", "IC"] else "Flexicap"),
+                    "latest_value": float(m["latest_value"]) if (pd.notna(m["latest_value"]) and m["latest_value"] == m["latest_value"]) else 0.0,
+                    "change_1m": float(m["change_1m"]) if (pd.notna(m["change_1m"]) and m["change_1m"] == m["change_1m"]) else 0.0,
+                    "change_1m_pct": float(m["change_1m_pct"]) if (pd.notna(m["change_1m_pct"]) and m["change_1m_pct"] == m["change_1m_pct"]) else 0.0,
+                    "change_2m": float(m["change_2m"]) if (pd.notna(m["change_2m"]) and m["change_2m"] == m["change_2m"]) else 0.0,
+                    "change_2m_pct": float(m["change_2m_pct"]) if (pd.notna(m["change_2m_pct"]) and m["change_2m_pct"] == m["change_2m_pct"]) else 0.0,
+                    "change_3m": float(m["change_3m"]) if (pd.notna(m["change_3m"]) and m["change_3m"] == m["change_3m"]) else 0.0,
+                    "change_3m_pct": float(m["change_3m_pct"]) if (pd.notna(m["change_3m_pct"]) and m["change_3m_pct"] == m["change_3m_pct"]) else 0.0,
+                    "trend_3m": m["trend_3m"],
+                    "portfolio_signal": m.get("portfolio_signal", "Active")
+                })
+
+            flexi_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Flexicap" or m["fund_code"] in ["H", "P", "Q", "J"]))
+            value_count = len(set(m["fund_code"] for m in cleaned_matches if m.get("mf_category") == "Value" or m["fund_code"] in ["HV", "HS", "IC"]))
+            badge_parts = []
+            if flexi_count > 0:
+                badge_parts.append(f"F{flexi_count}")
+            if value_count > 0:
+                badge_parts.append(f"V{value_count}")
+            mf_badge = "|".join(badge_parts) if badge_parts else None
+
             results.append({
                 "buying_date": buying_date,
                 "script": script,
                 "broker": broker,
+                "mf_badge": mf_badge,
+                "mf_flexi_count": flexi_count,
+                "mf_value_count": value_count,
+                "mutual_funds": cleaned_matches,
                 "total_market_value": total_market_value,
                 "lot_value_pct": lot_value_pct,
                 "buying_price": buying_price,
@@ -4205,6 +4255,7 @@ def export_watchlist_section1(
                 b_date_str = ""
             export_data.append({
                 "Broker": r.get("broker") or "",
+                "Mutual Funds": r.get("mf_badge") or "—",
                 "Stock Name": stock_display,
                 "Total Market Value": int(float(r.get("total_market_value") or 0)),
                 "Lot Value %age": round(float(r.get("lot_value_pct") or 0.0), 1),
@@ -5040,4 +5091,81 @@ def sync_nifty_fo_data(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to sync Zerodha Nifty F&O data: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# LATEST NEWS (7-Day Share-Price-Moving News & Free LLM Summarizer for Held Stocks)
+# ---------------------------------------------------------------------------
+from services.news_service import (
+    get_cached_holdings_news,
+    pull_latest_holdings_news,
+)
+
+
+@router.get("/news/latest")
+def get_latest_news_report(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the latest stock news parsed from Manual Data/News enriched with Live Holdings.
+    """
+    try:
+        holdings = db.query(Holding).filter(Holding.quantity > 0).all()
+        holdings_rows = [
+            {
+                "script": h.script,
+                "broker": h.broker,
+                "quantity": h.quantity,
+                "avg_price": h.avg_price,
+                "ltp": h.ltp,
+                "ltp_change_pct": getattr(h, "ltp_change_pct", 0.0) or 0.0,
+            }
+            for h in holdings
+        ]
+        return pull_latest_holdings_news(holdings_rows=holdings_rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load latest news report: {str(e)}")
+
+
+@router.post("/news/pull")
+def pull_latest_news_report(
+    days: int = 7,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Pulls fresh news (not older than `days` days, default 7) for all stocks currently held in
+    Live Holdings, filters to share-price-moving catalysts, and summarizes them via Free LLM.
+    """
+    try:
+        holdings = db.query(Holding).filter(Holding.quantity > 0).all()
+        holdings_rows = [
+            {
+                "script": h.script,
+                "broker": h.broker,
+                "quantity": h.quantity,
+                "avg_price": h.avg_price,
+                "ltp": h.ltp,
+                "ltp_change_pct": getattr(h, "ltp_change_pct", 0.0) or 0.0,
+            }
+            for h in holdings
+        ]
+        max_days = max(1, min(int(days or 7), 7))
+        report = pull_latest_holdings_news(holdings_rows=holdings_rows, max_days=max_days)
+
+        audit = AuditLog(
+            category="SYNC",
+            description=(
+                f"Pulled latest {max_days}-day price-impacting news for "
+                f"{report['summary']['total_held_stocks_scanned']} held stocks "
+                f"({report['summary']['stocks_with_impact_news']} stocks with active catalysts)."
+            ),
+        )
+        db.add(audit)
+        db.commit()
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to pull latest news: {str(e)}")
+
 
