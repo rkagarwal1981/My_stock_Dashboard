@@ -18,7 +18,7 @@ import RemoveIcon from '@mui/icons-material/Remove';
 import StarIcon from '@mui/icons-material/Star';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as ChartTooltip,
-  CartesianGrid, Legend, Cell, ReferenceLine
+  CartesianGrid, Legend, Cell, ReferenceLine, LabelList
 } from 'recharts';
 
 import AddTargetModal from '../components/AddTargetModal';
@@ -756,9 +756,20 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
       const current = selectedStock.month_values?.[m]?.value_crore ?? 0;
       const prev = idx > 0 ? (selectedStock.month_values?.[months[idx - 1]]?.value_crore ?? 0) : 0;
       const diff = idx > 0 ? current - prev : 0;
+      let pct: number | null = null;
+      if (idx > 0) {
+        if (prev > 0) {
+          pct = (diff / prev) * 100;
+        } else if (current > 0) {
+          pct = 100;
+        } else {
+          pct = 0;
+        }
+      }
       return {
         month: m,
-        change: Number(diff.toFixed(2))
+        change: Number(diff.toFixed(2)),
+        pct: pct !== null ? Number(pct.toFixed(1)) : null
       };
     });
   }, [selectedStock, months]);
@@ -1159,16 +1170,32 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
 
               {/* Chart 1: Holding Value Over Time */}
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Month-Wise Holding Value (₹ Crore)</Typography>
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={drawerChart1Data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={drawerChart1Data} margin={{ top: 24, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                   <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                  <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                  <YAxis
+                    tick={{ fill: '#94a3b8', fontSize: 10 }}
+                    domain={[0, (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.18) : 10)]}
+                  />
                   <ChartTooltip 
                     formatter={(v: any) => [`₹${Number(v).toFixed(2)} Cr`, 'Holding Value']} 
                     contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
+                    labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
+                    itemStyle={{ color: '#f8fafc' }}
                   />
-                  <Bar dataKey="value" fill="#2962ff" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="value" fill="#2962ff" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                    <LabelList
+                      dataKey="value"
+                      position="top"
+                      formatter={(v: any) => {
+                        const num = Number(v || 0);
+                        if (num <= 0) return '';
+                        return num >= 10 ? Math.round(num) : num.toFixed(1);
+                      }}
+                      style={{ fill: '#f8fafc', fontSize: 12, fontWeight: 700 }}
+                    />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
 
@@ -1176,28 +1203,37 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
 
               {/* Chart 2: MoM Change Value */}
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>Month-on-Month Holding Change (₹ Crore)</Typography>
-              <ResponsiveContainer width="100%" height={180}>
-                <BarChart data={drawerChart2Data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={drawerChart2Data} margin={{ top: 34, right: 12, left: 0, bottom: 26 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
                   <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
                   <YAxis 
                     tick={{ fill: '#94a3b8', fontSize: 10 }}
                     domain={[
-                      (dataMin: number) => (dataMin < 0 ? Math.floor(dataMin * 1.15) : -5),
-                      (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.15) : 5)
+                      (dataMin: number) => (dataMin < 0 ? Math.floor(dataMin * 1.38) : -5),
+                      (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.38) : 5)
                     ]}
                   />
                   <ReferenceLine y={0} stroke="#64748b" strokeWidth={1} strokeDasharray="3 3" />
                   <ChartTooltip 
-                    formatter={(v: any) => [`${Number(v) >= 0 ? '+' : ''}₹${Number(v).toFixed(2)} Cr`, 'MoM Change']} 
+                    formatter={(v: any, _name: any, item: any) => {
+                      const num = Number(v);
+                      const pct = item?.payload?.pct;
+                      const pctStr = pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : '';
+                      return [`${num >= 0 ? '+' : ''}₹${num.toFixed(2)} Cr${pctStr}`, 'MoM Change'];
+                    }}
                     contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
+                    labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
+                    itemStyle={{ color: '#f8fafc' }}
                   />
                   <Bar 
-                    dataKey="change" 
+                    dataKey="change"
+                    fill="#f8fafc"
                     isAnimationActive={false}
                     shape={(props: any) => {
                       const { x, y, width, height, payload } = props;
                       const val = payload?.change ?? 0;
+                      const pct = payload?.pct;
                       if (val === 0 && Math.abs(height) < 1) {
                         return (
                           <rect
@@ -1213,15 +1249,45 @@ const MutualFunds: React.FC<MutualFundsProps> = ({ onViewStock }) => {
                       const barY = height < 0 ? y + height : y;
                       const barHeight = Math.max(2, Math.abs(height));
                       const color = val > 0 ? '#10b981' : val < 0 ? '#ef4444' : '#64748b';
+                      const centerX = x + width / 2;
+                      const numStr = `${val > 0 ? '+' : ''}${Math.abs(val) >= 10 ? Math.round(val) : val.toFixed(1)}`;
+                      const pctStr = pct != null ? `(${pct > 0 ? '+' : ''}${Math.abs(pct) >= 10 ? Math.round(pct) : pct.toFixed(1)}%)` : '';
+                      const numLabelY = val >= 0 ? barY - 17 : barY + barHeight + 13;
+                      const pctLabelY = val >= 0 ? barY - 4 : barY + barHeight + 26;
+
                       return (
-                        <rect
-                          x={x}
-                          y={barY}
-                          width={width}
-                          height={barHeight}
-                          fill={color}
-                          rx={2}
-                        />
+                        <g>
+                          <rect
+                            x={x}
+                            y={barY}
+                            width={width}
+                            height={barHeight}
+                            fill={color}
+                            rx={2}
+                          />
+                          <text
+                            x={centerX}
+                            y={numLabelY}
+                            textAnchor="middle"
+                            fill={color}
+                            fontSize={12.5}
+                            fontWeight={700}
+                          >
+                            {numStr}
+                          </text>
+                          {pctStr && (
+                            <text
+                              x={centerX}
+                              y={pctLabelY}
+                              textAnchor="middle"
+                              fill="#cbd5e1"
+                              fontSize={11}
+                              fontWeight={600}
+                            >
+                              {pctStr}
+                            </text>
+                          )}
+                        </g>
                       );
                     }}
                   />

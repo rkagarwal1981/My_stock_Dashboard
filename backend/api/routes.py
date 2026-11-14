@@ -917,6 +917,19 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
             db.delete(action_record)
             db.commit()
 
+    # Mutual funds holding this stock + monthly holding history
+    try:
+        mf_matches = mf_engine.get_matching_funds_for_holdings([{"script": scrip}])
+        stock_mf_funds = mf_matches.get(scrip, [])
+        if any("month_values" not in f for f in stock_mf_funds):
+            mf_engine._cached_match_index = None
+            mf_matches = mf_engine.get_matching_funds_for_holdings([{"script": scrip}])
+            stock_mf_funds = mf_matches.get(scrip, [])
+        mf_months = mf_engine.get_available_months()
+    except Exception:
+        stock_mf_funds = []
+        mf_months = []
+
     return {
         "scrip": scrip,
         "current_quantity": clean_val(total_qty) or 0.0,
@@ -952,7 +965,11 @@ def get_stock_summary(scrip: str, current_user: User = Depends(get_current_user)
         ],
         "xirr": xirr_val,
         "current_pe": current_pe,
-        "avg_pe_3y": avg_pe_3y
+        "avg_pe_3y": avg_pe_3y,
+        "mutual_funds": {
+            "months": mf_months,
+            "funds": stock_mf_funds
+        }
     }
 
 # --- Analytics Dashboard Endpoint ---
@@ -4312,7 +4329,7 @@ def _get_screener_snapshot_meta(sym: str) -> dict:
     peers_file = f"{sym}_peers.png"
     chart_path = os.path.join(SCREENER_SNAPSHOT_DIR, chart_file)
     peers_path = os.path.join(SCREENER_SNAPSHOT_DIR, peers_file)
-    screener_url = f"https://www.screener.in/company/{sym}/"
+    screener_url = f"https://www.screener.in/company/{sym}/consolidated/"
 
     if os.path.exists(chart_path) and os.path.exists(peers_path):
         mtime = min(os.path.getmtime(chart_path), os.path.getmtime(peers_path))
@@ -4344,7 +4361,7 @@ def _get_screener_snapshot_meta(sym: str) -> dict:
 
 
 def _capture_screener_for_symbol(page, sym: str) -> dict:
-    screener_url = f"https://www.screener.in/company/{sym}/"
+    screener_url = f"https://www.screener.in/company/{sym}/consolidated/"
     chart_path = os.path.join(SCREENER_SNAPSHOT_DIR, f"{sym}_chart.png")
     peers_path = os.path.join(SCREENER_SNAPSHOT_DIR, f"{sym}_peers.png")
 
@@ -4450,7 +4467,7 @@ def capture_screener_snapshots_batch(
                         results[sym] = {
                             "exists": False,
                             "symbol": sym,
-                            "screener_url": f"https://www.screener.in/company/{sym}/",
+                            "screener_url": f"https://www.screener.in/company/{sym}/consolidated/",
                             "status": "error",
                             "error": str(e),
                         }

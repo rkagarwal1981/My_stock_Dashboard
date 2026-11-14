@@ -1,11 +1,13 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { useAppDispatch } from '../store';
+import { addNotifiedTargetId, removeNotifiedTargetId } from '../store/portfolioSlice';
 import {
   Box, Typography, Card, CardContent, Grid, Button, Divider,
   CircularProgress, Chip, Table, TableBody, TableCell, TableHead, TableRow,
   Select, MenuItem, FormControl, InputLabel, IconButton, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Radio, RadioGroup, FormControlLabel,
-  Tooltip, Tabs, Tab
+  Tooltip, Tabs, Tab, Checkbox
 } from '@mui/material';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import FlagIcon from '@mui/icons-material/Flag';
@@ -21,7 +23,7 @@ import NoteAltIcon from '@mui/icons-material/NoteAlt';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList, Cell
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList, Cell, ReferenceLine
 } from 'recharts';
 
 interface StockSummaryProps {
@@ -46,6 +48,17 @@ const EMPTY_TARGET_FORM = {
   category: '',
   comment: '',
   bookmark: '',
+  triggered: false,
+};
+
+const FUND_CODE_TO_OFFICIAL_NAME: Record<string, string> = {
+  H: 'HDFC Flexi Cap Fund',
+  P: 'Parag Parikh Flexi Cap Fund',
+  Q: 'Quant Flexi Cap Fund',
+  J: 'JM Flexicap Fund',
+  HV: 'HDFC Value Fund',
+  HS: 'HSBC Value Fund',
+  IC: 'ICICI Value Fund',
 };
 
 const StockSummary: React.FC<StockSummaryProps> = ({
@@ -55,6 +68,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
   onSelectScrip,
   onRefreshData
 }) => {
+  const dispatch = useAppDispatch();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -76,6 +90,10 @@ const StockSummary: React.FC<StockSummaryProps> = ({
 
   // ─── Bottom-left panel tab state ────────────────────────────────────────────
   const [bottomTab, setBottomTab] = useState<0 | 1>(0); // 0 = Active Targets, 1 = Attachments & Comments
+
+  // ─── Bottom-right panel tab state (Settlement History vs Mutual Funds) ──────
+  const [rightTab, setRightTab] = useState<0 | 1>(0); // 0 = Settlement History, 1 = Mutual Funds
+  const [selectedMfCode, setSelectedMfCode] = useState<string>('');
 
   // ─── Research Notes state ────────────────────────────────────────────────────
   const [noteText, setNoteText] = useState('');
@@ -131,6 +149,56 @@ const StockSummary: React.FC<StockSummaryProps> = ({
     loadNote();
     loadAttachments();
   }, [scrip]);
+
+  const mfFunds: any[] = data?.mutual_funds?.funds ?? [];
+  const mfMonths: string[] = data?.mutual_funds?.months ?? [];
+
+  useEffect(() => {
+    if (mfFunds.length > 0) {
+      if (!selectedMfCode || !mfFunds.some((f: any) => f.fund_code === selectedMfCode)) {
+        setSelectedMfCode(mfFunds[0].fund_code);
+      }
+    } else {
+      setSelectedMfCode('');
+    }
+  }, [mfFunds, selectedMfCode]);
+
+  const activeMfFund = useMemo(() => {
+    if (!mfFunds || mfFunds.length === 0) return null;
+    return mfFunds.find((f: any) => f.fund_code === selectedMfCode) || mfFunds[0];
+  }, [mfFunds, selectedMfCode]);
+
+  const mfHoldingChartData = useMemo(() => {
+    if (!activeMfFund || !mfMonths || mfMonths.length === 0) return [];
+    return mfMonths.map((m: string) => ({
+      month: m,
+      value: Number((activeMfFund.month_values?.[m] ?? 0).toFixed(2)),
+    }));
+  }, [activeMfFund, mfMonths]);
+
+  const mfChangeChartData = useMemo(() => {
+    if (!activeMfFund || !mfMonths || mfMonths.length === 0) return [];
+    return mfMonths.map((m: string, idx: number) => {
+      const current = activeMfFund.month_values?.[m] ?? 0;
+      const prev = idx > 0 ? (activeMfFund.month_values?.[mfMonths[idx - 1]] ?? 0) : 0;
+      const diff = idx > 0 ? current - prev : 0;
+      let pct: number | null = null;
+      if (idx > 0) {
+        if (prev > 0) {
+          pct = (diff / prev) * 100;
+        } else if (current > 0) {
+          pct = 100;
+        } else {
+          pct = 0;
+        }
+      }
+      return {
+        month: m,
+        change: Number(diff.toFixed(2)),
+        pct: pct !== null ? Number(pct.toFixed(1)) : null,
+      };
+    });
+  }, [activeMfFund, mfMonths]);
 
   // ─── Research Notes helpers ──────────────────────────────────────────────────
 
@@ -236,6 +304,7 @@ const StockSummary: React.FC<StockSummaryProps> = ({
       category: t.category || '',
       comment: t.comment || '',
       bookmark: t.bookmark || '',
+      triggered: Boolean(t.triggered),
     });
     setTargetDialogOpen(true);
   };
@@ -257,7 +326,18 @@ const StockSummary: React.FC<StockSummaryProps> = ({
           category: targetForm.category || null,
           comment: targetForm.comment || null,
           bookmark: targetForm.bookmark || null,
+          triggered: targetForm.triggered ? 1 : 0,
         });
+        if (!targetForm.triggered) {
+          const newPrice = parseFloat(targetForm.target_price);
+          const priceOrTypeChanged =
+            Number(editTarget.target_price) !== newPrice || editTarget.type !== targetForm.type;
+          if (priceOrTypeChanged) {
+            dispatch(removeNotifiedTargetId(editTarget.id));
+          } else {
+            dispatch(addNotifiedTargetId(editTarget.id));
+          }
+        }
       } else {
         // Create mode — POST
         await axios.post('/api/targets', {
@@ -1354,57 +1434,351 @@ const StockSummary: React.FC<StockSummaryProps> = ({
           </CardContent>
         </Card>
 
-        {/* ── Column 3: Settlement History ── */}
+        {/* ── Column 3: Settlement History & Mutual Funds ── */}
         <Card sx={{ background: 'rgba(22,24,36,0.7)', border: '1px solid #2a2e43', borderRadius: 2, display: 'flex', flexDirection: 'column' }}>
-          <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', height: 'calc(100% - 48px)' }}>
-            <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>Settlement History</Typography>
-            <Box sx={{ overflowY: 'auto', pr: 0.5, flex: 1, maxHeight: 600 }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    {['Buy Date', 'Sell Date', 'Matched Qty', 'Buy Price', 'Sell Price', 'Holding Days', 'Return %age', 'P&L', 'Status'].map(h => (
-                      <TableCell
-                        key={h}
-                        align={h === 'Buy Price' || h === 'Sell Price' || h === 'P&L' ? 'right' : 'left'}
-                        sx={{ color: 'text.secondary', fontWeight: 600, fontSize: 11, py: 1, bgcolor: '#161824' }}
+          {/* Tab header bar */}
+          <Box sx={{ borderBottom: '1px solid #2a2e43', px: 2.5, pt: 1.5, flexShrink: 0 }}>
+            <Tabs
+              value={rightTab}
+              onChange={(_, v) => setRightTab(v)}
+              sx={{
+                minHeight: 38,
+                '& .MuiTabs-indicator': { backgroundColor: '#2962ff', height: 2.5, borderRadius: 2 },
+              }}
+            >
+              <Tab
+                label="Settlement History"
+                sx={{
+                  minHeight: 38,
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  color: rightTab === 0 ? '#f8fafc' : '#64748b',
+                  '&.Mui-selected': { color: '#f8fafc' },
+                  px: 1.5,
+                }}
+              />
+              <Tab
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <span>Mutual Funds</span>
+                    {mfFunds.length > 0 && (
+                      <Box
+                        component="span"
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          minWidth: 18,
+                          height: 18,
+                          px: 0.5,
+                          borderRadius: '9px',
+                          fontSize: 10,
+                          fontWeight: 800,
+                          lineHeight: 1,
+                          bgcolor: rightTab === 1 ? '#2962ff' : 'rgba(167,139,250,0.28)',
+                          color: rightTab === 1 ? '#fff' : '#c4b5fd',
+                          transition: 'background 0.2s',
+                        }}
                       >
-                        {h}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(data.settlement_history ?? []).map((r: any, i: number) => (
-                    <TableRow key={i} sx={{ borderLeft: `3px solid ${r.comment === 'Fully Settled' ? '#10b981' : r.comment === 'Partially Settled' ? '#f59e0b' : '#ef4444'}` }}>
-                      <TableCell sx={{ fontSize: 12 }}>{fmtDate(r.buy_date)}</TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>{fmtDate(r.sell_date)}</TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>{r.qty ?? r.sum_of_qty}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(r.price))}</TableCell>
-                      <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(r.average_of_price))}</TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>{r.holding_days != null ? `${r.holding_days}d` : '—'}</TableCell>
-                      <TableCell sx={{ fontSize: 12, color: r.holding_days != null && r.price > 0 && calculateRowReturn(r) >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                        {r.holding_days != null && r.price > 0 ? (
-                          `${calculateRowReturn(r) >= 0 ? '+' : ''}${calculateRowReturn(r).toFixed(2)}%`
-                        ) : '—'}
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontSize: 12, color: (r.pnl ?? 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                        {r.pnl != null ? `${r.pnl >= 0 ? '+' : ''}${fmt(Math.round(r.pnl))}` : '—'}
-                      </TableCell>
-                      <TableCell>
-                        <Chip label={r.comment} size="small" sx={{
-                          bgcolor: r.comment === 'Fully Settled' ? '#10b98122' : r.comment === 'Partially Settled' ? '#f59e0b22' : '#ef444422',
-                          color: r.comment === 'Fully Settled' ? '#10b981' : r.comment === 'Partially Settled' ? '#f59e0b' : '#ef4444',
-                          fontSize: 10, fontWeight: 600
-                        }} />
-                      </TableCell>
+                        {mfFunds.length}
+                      </Box>
+                    )}
+                  </Box>
+                }
+                sx={{
+                  minHeight: 38,
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  color: rightTab === 1 ? '#f8fafc' : '#64748b',
+                  '&.Mui-selected': { color: '#f8fafc' },
+                  px: 1.5,
+                }}
+              />
+            </Tabs>
+          </Box>
+
+          <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+            {rightTab === 0 && (
+              <Box sx={{ overflowY: 'auto', pr: 0.5, flex: 1, maxHeight: 600 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      {['Buy Date', 'Sell Date', 'Matched Qty', 'Buy Price', 'Sell Price', 'Holding Days', 'Return %age', 'P&L', 'Status'].map(h => (
+                        <TableCell
+                          key={h}
+                          align={h === 'Buy Price' || h === 'Sell Price' || h === 'P&L' ? 'right' : 'left'}
+                          sx={{ color: 'text.secondary', fontWeight: 600, fontSize: 11, py: 1, bgcolor: '#161824' }}
+                        >
+                          {h}
+                        </TableCell>
+                      ))}
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              {(data.settlement_history ?? []).length === 0 && (
-                <Typography color="text.secondary" variant="body2" sx={{ textAlign: 'center', py: 2 }}>No settlement history</Typography>
-              )}
-            </Box>
+                  </TableHead>
+                  <TableBody>
+                    {(data.settlement_history ?? []).map((r: any, i: number) => (
+                      <TableRow key={i} sx={{ borderLeft: `3px solid ${r.comment === 'Fully Settled' ? '#10b981' : r.comment === 'Partially Settled' ? '#f59e0b' : '#ef4444'}` }}>
+                        <TableCell sx={{ fontSize: 12 }}>{fmtDate(r.buy_date)}</TableCell>
+                        <TableCell sx={{ fontSize: 12 }}>{fmtDate(r.sell_date)}</TableCell>
+                        <TableCell sx={{ fontSize: 12 }}>{r.qty ?? r.sum_of_qty}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(r.price))}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: 12 }}>{fmt(Math.round(r.average_of_price))}</TableCell>
+                        <TableCell sx={{ fontSize: 12 }}>{r.holding_days != null ? `${r.holding_days}d` : '—'}</TableCell>
+                        <TableCell sx={{ fontSize: 12, color: r.holding_days != null && r.price > 0 && calculateRowReturn(r) >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                          {r.holding_days != null && r.price > 0 ? (
+                            `${calculateRowReturn(r) >= 0 ? '+' : ''}${calculateRowReturn(r).toFixed(2)}%`
+                          ) : '—'}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontSize: 12, color: (r.pnl ?? 0) >= 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                          {r.pnl != null ? `${r.pnl >= 0 ? '+' : ''}${fmt(Math.round(r.pnl))}` : '—'}
+                        </TableCell>
+                        <TableCell>
+                          <Chip label={r.comment} size="small" sx={{
+                            bgcolor: r.comment === 'Fully Settled' ? '#10b98122' : r.comment === 'Partially Settled' ? '#f59e0b22' : '#ef444422',
+                            color: r.comment === 'Fully Settled' ? '#10b981' : r.comment === 'Partially Settled' ? '#f59e0b' : '#ef4444',
+                            fontSize: 10, fontWeight: 600
+                          }} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {(data.settlement_history ?? []).length === 0 && (
+                  <Typography color="text.secondary" variant="body2" sx={{ textAlign: 'center', py: 2 }}>No settlement history</Typography>
+                )}
+              </Box>
+            )}
+
+            {rightTab === 1 && (
+              <Box sx={{ overflowY: 'auto', pr: 0.5, flex: 1, maxHeight: 600 }}>
+                {mfFunds.length > 0 ? (
+                  <Box>
+                    {/* List of Mutual Funds holding this stock */}
+                    <Box sx={{ mb: 2.5 }}>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: '#94a3b8',
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.7,
+                          display: 'block',
+                          mb: 1,
+                        }}
+                      >
+                        Mutual Funds Holding {scrip} ({mfFunds.length}) — Click to View
+                      </Typography>
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                        {mfFunds.map((f: any) => {
+                          const isSelected = activeMfFund?.fund_code === f.fund_code;
+                          const officialName = FUND_CODE_TO_OFFICIAL_NAME[f.fund_code] || f.fund_name;
+                          return (
+                            <Box
+                              key={f.fund_code}
+                              onClick={() => setSelectedMfCode(f.fund_code)}
+                              sx={{
+                                cursor: 'pointer',
+                                px: 1.5,
+                                py: 0.85,
+                                borderRadius: 1.5,
+                                border: isSelected
+                                  ? '1.5px solid #3b82f6'
+                                  : '1px solid #2a2e43',
+                                bgcolor: isSelected
+                                  ? 'rgba(59,130,246,0.16)'
+                                  : 'rgba(15,23,42,0.55)',
+                                transition: 'all 0.15s ease',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                '&:hover': {
+                                  borderColor: '#3b82f6',
+                                  bgcolor: isSelected
+                                    ? 'rgba(59,130,246,0.22)'
+                                    : 'rgba(59,130,246,0.08)',
+                                },
+                              }}
+                            >
+                              <Chip
+                                label={f.mf_category || 'Fund'}
+                                size="small"
+                                sx={{
+                                  height: 18,
+                                  fontSize: 9.5,
+                                  fontWeight: 700,
+                                  bgcolor:
+                                    f.mf_category === 'Flexicap'
+                                      ? 'rgba(56,189,248,0.15)'
+                                      : 'rgba(167,139,250,0.15)',
+                                  color:
+                                    f.mf_category === 'Flexicap' ? '#38bdf8' : '#c084fc',
+                                }}
+                              />
+                              <Typography
+                                sx={{
+                                  fontSize: 12.5,
+                                  fontWeight: isSelected ? 700 : 600,
+                                  color: isSelected ? '#f8fafc' : '#cbd5e1',
+                                }}
+                              >
+                                {officialName}
+                              </Typography>
+                              <Typography
+                                sx={{
+                                  fontSize: 11.5,
+                                  fontWeight: 700,
+                                  color: isSelected ? '#60a5fa' : '#94a3b8',
+                                }}
+                              >
+                                ₹{Math.round(Number(f.latest_value || 0))} Cr
+                              </Typography>
+                            </Box>
+                          );
+                        })}
+                      </Box>
+                    </Box>
+
+                    {/* Chart 1: Month-Wise Holding Value (₹ Crore) */}
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, fontSize: 14.5 }}>
+                      Month-Wise Holding Value (₹ Crore)
+                    </Typography>
+                    <ResponsiveContainer width="100%" height={205}>
+                      <BarChart data={mfHoldingChartData} margin={{ top: 24, right: 12, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
+                        <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                        <YAxis
+                          tick={{ fill: '#94a3b8', fontSize: 10 }}
+                          domain={[0, (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.18) : 10)]}
+                        />
+                        <RechartsTooltip
+                          formatter={(v: any) => [`₹${Number(v).toFixed(2)} Cr`, 'Holding Value']}
+                          contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
+                          labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
+                          itemStyle={{ color: '#f8fafc' }}
+                        />
+                        <Bar dataKey="value" fill="#3b66f5" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                          <LabelList
+                            dataKey="value"
+                            position="top"
+                            formatter={(v: any) => {
+                              const num = Number(v || 0);
+                              if (num <= 0) return '';
+                              return num >= 10 ? Math.round(num) : num.toFixed(1);
+                            }}
+                            style={{ fill: '#f8fafc', fontSize: 12, fontWeight: 700 }}
+                          />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+
+                    <Box sx={{ mb: 2.5 }} />
+
+                    {/* Chart 2: Month-on-Month Holding Change (₹ Crore) */}
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, fontSize: 14.5 }}>
+                      Month-on-Month Holding Change (₹ Crore)
+                    </Typography>
+                    <ResponsiveContainer width="100%" height={240}>
+                      <BarChart data={mfChangeChartData} margin={{ top: 34, right: 12, left: 0, bottom: 26 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2a2e43" />
+                        <XAxis dataKey="month" tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                        <YAxis
+                          tick={{ fill: '#94a3b8', fontSize: 10 }}
+                          domain={[
+                            (dataMin: number) => (dataMin < 0 ? Math.floor(dataMin * 1.38) : -5),
+                            (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.38) : 5),
+                          ]}
+                        />
+                        <ReferenceLine y={0} stroke="#64748b" strokeWidth={1} strokeDasharray="3 3" />
+                        <RechartsTooltip
+                          formatter={(v: any, _name: any, item: any) => {
+                            const num = Number(v);
+                            const pct = item?.payload?.pct;
+                            const pctStr = pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)` : '';
+                            return [`${num >= 0 ? '+' : ''}₹${num.toFixed(2)} Cr${pctStr}`, 'MoM Change'];
+                          }}
+                          contentStyle={{ background: '#161824', border: '1px solid #2a2e43', borderRadius: 8 }}
+                          labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
+                          itemStyle={{ color: '#f8fafc' }}
+                        />
+                        <Bar
+                          dataKey="change"
+                          fill="#f8fafc"
+                          isAnimationActive={false}
+                          shape={(props: any) => {
+                            const { x, y, width, height, payload } = props;
+                            const val = payload?.change ?? 0;
+                            const pct = payload?.pct;
+                            if (val === 0 && Math.abs(height) < 1) {
+                              return (
+                                <rect
+                                  x={x + width * 0.2}
+                                  y={y - 1}
+                                  width={width * 0.6}
+                                  height={2}
+                                  fill="#64748b"
+                                  rx={1}
+                                />
+                              );
+                            }
+                            const barY = height < 0 ? y + height : y;
+                            const barHeight = Math.max(2, Math.abs(height));
+                            const color = val > 0 ? '#10b981' : val < 0 ? '#ef4444' : '#64748b';
+                            const centerX = x + width / 2;
+                            const numStr = `${val > 0 ? '+' : ''}${Math.abs(val) >= 10 ? Math.round(val) : val.toFixed(1)}`;
+                            const pctStr =
+                              pct != null
+                                ? `(${pct > 0 ? '+' : ''}${Math.abs(pct) >= 10 ? Math.round(pct) : pct.toFixed(1)}%)`
+                                : '';
+                            const numLabelY = val >= 0 ? barY - 17 : barY + barHeight + 13;
+                            const pctLabelY = val >= 0 ? barY - 4 : barY + barHeight + 26;
+
+                            return (
+                              <g>
+                                <rect
+                                  x={x}
+                                  y={barY}
+                                  width={width}
+                                  height={barHeight}
+                                  fill={color}
+                                  rx={2}
+                                />
+                                <text
+                                  x={centerX}
+                                  y={numLabelY}
+                                  textAnchor="middle"
+                                  fill={color}
+                                  fontSize={12.5}
+                                  fontWeight={700}
+                                >
+                                  {numStr}
+                                </text>
+                                {pctStr && (
+                                  <text
+                                    x={centerX}
+                                    y={pctLabelY}
+                                    textAnchor="middle"
+                                    fill="#cbd5e1"
+                                    fontSize={11}
+                                    fontWeight={600}
+                                  >
+                                    {pctStr}
+                                  </text>
+                                )}
+                              </g>
+                            );
+                          }}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Box>
+                ) : (
+                  <Typography color="text.secondary" variant="body2" sx={{ textAlign: 'center', py: 6 }}>
+                    This stock is not currently held by any tracked Mutual Funds.
+                  </Typography>
+                )}
+              </Box>
+            )}
           </CardContent>
         </Card>
       </Box>
@@ -1498,26 +1872,57 @@ const StockSummary: React.FC<StockSummaryProps> = ({
             sx={{ mb: 2 }}
           />
 
-          {/* Bookmark color picker */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2" sx={{ fontSize: 13, mr: 1 }}>Bookmark:</Typography>
-            {BOOKMARK_COLORS.map(b => (
-              <Tooltip key={b.key} title={b.label}>
-                <IconButton
-                  size="small"
-                  onClick={() => setTargetForm({ ...targetForm, bookmark: targetForm.bookmark === b.key ? '' : b.key })}
-                  sx={{
-                    color: targetForm.bookmark === b.key ? b.color : 'rgba(255,255,255,0.2)',
-                    border: targetForm.bookmark === b.key ? `2px solid ${b.color}` : '2px solid transparent',
-                    borderRadius: 1,
-                    transition: 'all 0.2s',
-                    '&:hover': { color: b.color }
-                  }}
-                >
-                  <FlagIcon sx={{ fontSize: 20 }} />
-                </IconButton>
-              </Tooltip>
-            ))}
+          {/* Bookmark color picker & Triggered checkbox */}
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="body2" sx={{ fontSize: 13, mr: 1 }}>Bookmark:</Typography>
+              {BOOKMARK_COLORS.map(b => (
+                <Tooltip key={b.key} title={b.label}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setTargetForm({ ...targetForm, bookmark: targetForm.bookmark === b.key ? '' : b.key })}
+                    sx={{
+                      color: targetForm.bookmark === b.key ? b.color : 'rgba(255,255,255,0.2)',
+                      border: targetForm.bookmark === b.key ? `2px solid ${b.color}` : '2px solid transparent',
+                      borderRadius: 1,
+                      transition: 'all 0.2s',
+                      '&:hover': { color: b.color }
+                    }}
+                  >
+                    <FlagIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              ))}
+            </Box>
+
+            {editTarget && (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={Boolean(targetForm.triggered)}
+                    onChange={(e) => setTargetForm({ ...targetForm, triggered: e.target.checked })}
+                    sx={{
+                      color: '#64748b',
+                      '&.Mui-checked': { color: '#10b981' }
+                    }}
+                  />
+                }
+                label={
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: targetForm.triggered ? '#10b981' : '#94a3b8'
+                    }}
+                  >
+                    Triggered
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+            )}
           </Box>
         </DialogContent>
 

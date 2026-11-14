@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAppSelector, useAppDispatch } from '../store';
-import { removeNotifiedTargetId } from '../store/portfolioSlice';
+import { addNotifiedTargetId, removeNotifiedTargetId } from '../store/portfolioSlice';
 import axios from 'axios';
 import {
   Box, Typography, Card, CardContent, Button, Chip, Switch, Slider,
   FormControl, InputLabel, Select, MenuItem, TextField, Dialog, DialogTitle,
   DialogContent, DialogActions, IconButton, Tooltip, Autocomplete,
-  FormControlLabel, LinearProgress, Menu, Popover, Table, TableHead, TableBody, TableRow, TableCell
+  FormControlLabel, LinearProgress, Menu, Popover, Table, TableHead, TableBody, TableRow, TableCell, Checkbox
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -95,6 +95,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     category: '',
     comment: '',
     bookmark: '',
+    triggered: false,
   });
 
   // Add category dialog state
@@ -214,7 +215,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
     setAddDialogOpen(false);
     setEditTarget(null);
     setTargetRows([{ type: 'Buy', target_price: '' }]);
-    setDialogCommon({ script: '', category: '', comment: '', bookmark: '' });
+    setDialogCommon({ script: '', category: '', comment: '', bookmark: '', triggered: false });
   };
 
   const handleOpenEdit = (target: any) => {
@@ -228,6 +229,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
       category: target.category || '',
       comment: target.comment || '',
       bookmark: target.bookmark || '',
+      triggered: Boolean(target.triggered),
     });
     setAddDialogOpen(true);
   };
@@ -244,7 +246,18 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
           category: dialogCommon.category || null,
           comment: dialogCommon.comment || null,
           bookmark: dialogCommon.bookmark || null,
+          triggered: dialogCommon.triggered ? 1 : 0,
         });
+        if (!dialogCommon.triggered) {
+          const newPrice = parseFloat(row.target_price);
+          const priceOrTypeChanged =
+            Number(editTarget.target_price) !== newPrice || editTarget.type !== row.type;
+          if (priceOrTypeChanged) {
+            dispatch(removeNotifiedTargetId(editTarget.id));
+          } else {
+            dispatch(addNotifiedTargetId(editTarget.id));
+          }
+        }
       } else {
         // Create mode — POST each target row
         if (!dialogCommon.script) return;
@@ -802,7 +815,7 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
             variant="contained"
             size="small"
             startIcon={<AddIcon />}
-            onClick={() => { setEditTarget(null); setTargetRows([{ type: 'Buy', target_price: '' }]); setDialogCommon({ script: '', category: '', comment: '', bookmark: '' }); setAddDialogOpen(true); }}
+            onClick={() => { setEditTarget(null); setTargetRows([{ type: 'Buy', target_price: '' }]); setDialogCommon({ script: '', category: '', comment: '', bookmark: '', triggered: false }); setAddDialogOpen(true); }}
             sx={{ borderRadius: 2 }}
           >
             Add Target
@@ -1269,6 +1282,34 @@ const TargetSetting: React.FC<TargetSettingProps> = ({ onViewStock }) => {
               ))}
             </Select>
           </FormControl>
+
+          {editTarget && (
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={Boolean(dialogCommon.triggered)}
+                  onChange={(e) => setDialogCommon({ ...dialogCommon, triggered: e.target.checked })}
+                  sx={{
+                    color: '#64748b',
+                    '&.Mui-checked': { color: '#10b981' }
+                  }}
+                />
+              }
+              label={
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: dialogCommon.triggered ? '#10b981' : '#94a3b8'
+                  }}
+                >
+                  Triggered
+                </Typography>
+              }
+            />
+          )}
         </DialogContent>
         <DialogActions sx={{ p: 2, pt: 0 }}>
           <Button

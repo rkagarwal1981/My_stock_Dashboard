@@ -57,6 +57,7 @@ const SECTION1_COLUMNS: ColumnDef[] = [
   { label: 'Remaining Lot Value', field: 'value', type: 'number' },
   { label: 'Potential Profit (for this lot only)', field: 'potential_profit', type: 'number' },
   { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
+  { label: 'Target', field: 'has_target', type: 'boolean' },
   { label: 'Options', field: 'tag_type', type: 'string' },
   { label: 'Comments', field: 'comment', type: 'string', minWidth: 210 }
 ];
@@ -74,7 +75,8 @@ const SECTION2_COLUMNS: ColumnDef[] = [
   { label: 'Date', field: 'latest_tx_date', type: 'date' },
   { label: '# of Days', field: 'latest_tx_days', type: 'number' },
   { label: 'Last Tx Type', field: 'latest_tx_type', type: 'string' },
-  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
+  { label: 'Target', field: 'has_target', type: 'boolean' }
 ];
 
 const SECTION3_COLUMNS: ColumnDef[] = [
@@ -90,7 +92,8 @@ const SECTION3_COLUMNS: ColumnDef[] = [
   { label: 'Date', field: 'latest_tx_date', type: 'date' },
   { label: '# of Days', field: 'latest_tx_days', type: 'number' },
   { label: 'Last Tx Type', field: 'latest_tx_type', type: 'string' },
-  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
+  { label: 'Target', field: 'has_target', type: 'boolean' }
 ];
 
 const SECTION4_COLUMNS: ColumnDef[] = [
@@ -102,11 +105,14 @@ const SECTION4_COLUMNS: ColumnDef[] = [
   { label: 'LTP Now', field: 'ltp', type: 'number' },
   { label: 'Today Chg %', field: 'change_in_ltp_pct', type: 'number' },
   { label: 'Drop from Exit %', field: 'drop_from_exit_pct', type: 'number', isHighlight: true },
-  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true }
+  { label: 'Action (24h)', field: 'action_checked', type: 'boolean', isAction: true },
+  { label: 'Target', field: 'has_target', type: 'boolean' }
 ];
 
 const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
   const allHoldings = useAppSelector((state) => state.portfolio.holdings);
+  const reduxTargets = useAppSelector((state) => state.portfolio.targets);
+  const [targetsData, setTargetsData] = useState<any[]>([]);
   const [popoverAnchor, setPopoverAnchor] = useState<HTMLElement | null>(null);
   const [popoverData, setPopoverData] = useState<any[]>([]);
   const [popoverStock, setPopoverStock] = useState<string>('');
@@ -350,13 +356,23 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
     }
   };
 
+  const fetchTargets = async () => {
+    try {
+      const res = await axios.get('/api/targets');
+      setTargetsData(res.data || []);
+    } catch (e) {
+      console.error('Failed to fetch targets for watchlist:', e);
+    }
+  };
+
   const loadAllData = useCallback(async (currentN: number, txType: string = section3TxTypeFilter) => {
     setLoading(true);
     await Promise.all([
       fetchSection1(),
       fetchSection2(currentN),
       fetchSection3(currentN, txType),
-      fetchSection4(section4N)
+      fetchSection4(section4N),
+      fetchTargets()
     ]);
     setLoading(false);
   }, [section3TxTypeFilter, section4N]);
@@ -486,30 +502,82 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
     return map;
   }, [allHoldings]);
 
-  const enrichedSection1Data = useMemo(() => {
-    return section1Data.map(row => {
-      if (row.mutual_funds && row.mutual_funds.length > 0) return row;
-      const raw = String(row.script || '').split('|')[0].trim().toUpperCase();
-      const base = raw.endsWith('-EQ') ? raw.slice(0, -3).trim() : raw;
-      const mfInfo = holdingsMfMap[raw] || holdingsMfMap[base];
-      if (mfInfo) {
-        return {
+  const normalizeSymbolKey = (s: any) => {
+    let raw = String(s || '').split('|')[0].trim().toUpperCase();
+    if (raw.endsWith('-EQ')) raw = raw.slice(0, -3).trim();
+    return raw;
+  };
+
+  const targetsBySymbol = useMemo(() => {
+    const sourceTargets = targetsData && targetsData.length > 0 ? targetsData : reduxTargets || [];
+    const map: Record<string, any[]> = {};
+    for (const t of sourceTargets) {
+      const key = normalizeSymbolKey(t.script);
+      if (!key) continue;
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    }
+    return map;
+  }, [targetsData, reduxTargets]);
+
+  const enrichRowsWithTargetsAndMf = useCallback(
+    (rows: any[], includeMf: boolean = false) => {
+      return (rows || []).map(row => {
+        const key = normalizeSymbolKey(row.script);
+        const stockTargets = targetsBySymbol[key] || [];
+        const hasTarget = stockTargets.length > 0;
+        let nextRow = {
           ...row,
-          mf_badge: row.mf_badge || mfInfo.mf_badge,
-          mutual_funds: mfInfo.mutual_funds
+          has_target: hasTarget,
+          stock_targets: stockTargets
         };
-      }
-      return row;
-    });
-  }, [section1Data, holdingsMfMap]);
+        if (includeMf && (!row.mutual_funds || row.mutual_funds.length === 0)) {
+          const mfInfo = holdingsMfMap[key];
+          if (mfInfo) {
+            nextRow = {
+              ...nextRow,
+              mf_badge: row.mf_badge || mfInfo.mf_badge,
+              mutual_funds: mfInfo.mutual_funds
+            };
+          }
+        }
+        return nextRow;
+      });
+    },
+    [targetsBySymbol, holdingsMfMap]
+  );
 
   // Filtered & sorted rows for each table
-  const displaySection1 = applyFilterAndSort(enrichedSection1Data, 'section1', SECTION1_COLUMNS);
-  const displaySection2Top = applyFilterAndSort(section2Data.top_movers, 'section2_top', SECTION2_COLUMNS);
-  const displaySection2Bottom = applyFilterAndSort(section2Data.bottom_movers, 'section2_bottom', SECTION2_COLUMNS);
-  const displaySection3Top = applyFilterAndSort(section3Data.top_movers, 'section3_top', SECTION3_COLUMNS);
-  const displaySection3Bottom = applyFilterAndSort(section3Data.bottom_movers, 'section3_bottom', SECTION3_COLUMNS);
-  const displaySection4 = applyFilterAndSort(section4Data, 'section4', SECTION4_COLUMNS);
+  const displaySection1 = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section1Data, true),
+    'section1',
+    SECTION1_COLUMNS
+  );
+  const displaySection2Top = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section2Data.top_movers),
+    'section2_top',
+    SECTION2_COLUMNS
+  );
+  const displaySection2Bottom = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section2Data.bottom_movers),
+    'section2_bottom',
+    SECTION2_COLUMNS
+  );
+  const displaySection3Top = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section3Data.top_movers),
+    'section3_top',
+    SECTION3_COLUMNS
+  );
+  const displaySection3Bottom = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section3Data.bottom_movers),
+    'section3_bottom',
+    SECTION3_COLUMNS
+  );
+  const displaySection4 = applyFilterAndSort(
+    enrichRowsWithTargetsAndMf(section4Data),
+    'section4',
+    SECTION4_COLUMNS
+  );
 
   // TradingView Watchlist string for Section 1 (strips -EQ and any "| Partially Settled" suffix)
   const section1TradingViewString = useMemo(() => {
@@ -571,7 +639,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
     if (e) e.stopPropagation();
     const sym = cleanScreenerSymbol(rawScript);
     if (!sym) return;
-    window.open(`https://www.screener.in/company/${encodeURIComponent(sym)}/`, '_blank', 'noopener,noreferrer');
+    window.open(`https://www.screener.in/company/${encodeURIComponent(sym)}/consolidated/`, '_blank', 'noopener,noreferrer');
   };
 
   const handleOpenScreenerSnapshot = async (rawScript: string, force: boolean = false, e?: React.MouseEvent) => {
@@ -585,7 +653,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
     if (!force || !screenerData || screenerData.symbol !== sym) {
       setScreenerData({
         symbol: sym,
-        screener_url: `https://www.screener.in/company/${sym}/`,
+        screener_url: `https://www.screener.in/company/${sym}/consolidated/`,
         chart_url: null,
         peers_url: null,
         captured_at: null,
@@ -771,6 +839,130 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
           }}
         >
           {badgeText}
+        </span>
+      </Tooltip>
+    );
+  };
+
+  const renderTargetCell = (row: any) => {
+    const targets: any[] = row.stock_targets || [];
+    const hasTarget = targets.length > 0;
+    const anyTriggered = targets.some((t) => Boolean(t.is_triggered_live || t.triggered));
+
+    const tooltipContent = hasTarget ? (
+      <Box sx={{ p: 1, minWidth: 210, maxWidth: 320 }}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            color: '#94a3b8',
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: 0.8,
+            mb: 1.5
+          }}
+        >
+          {targets.length} TARGET{targets.length !== 1 ? 'S' : ''} SET
+        </Typography>
+
+        {targets.map((t: any, idx: number) => {
+          const isTrig = Boolean(t.is_triggered_live || t.triggered);
+          const isLast = idx === targets.length - 1;
+          return (
+            <Box
+              key={t.id || idx}
+              sx={{
+                mb: isLast ? 0 : 1.5,
+                pb: isLast ? 0 : 1.25,
+                borderBottom: isLast ? 'none' : '1px solid #2a2e43'
+              }}
+            >
+              {/* Row 1: Type chip + Triggered chip (no category chip) */}
+              <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap', mb: 0.6 }}>
+                <Chip
+                  label={t.type}
+                  size="small"
+                  sx={{
+                    bgcolor: t.type === 'Buy' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                    color: t.type === 'Buy' ? '#10b981' : '#ef4444',
+                    fontWeight: 700,
+                    fontSize: 10,
+                    height: 20
+                  }}
+                />
+                {isTrig && (
+                  <Chip
+                    label="TRIGGERED"
+                    size="small"
+                    sx={{
+                      bgcolor: 'rgba(16,185,129,0.2)',
+                      color: '#10b981',
+                      fontSize: 9,
+                      fontWeight: 800,
+                      height: 20
+                    }}
+                  />
+                )}
+              </Box>
+
+              {/* Row 2: Target price */}
+              <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#f8fafc', lineHeight: 1.3 }}>
+                Target: {fmt(Number(t.target_price || 0))}
+              </Typography>
+
+              {/* Row 3: Comment */}
+              {t.comment && String(t.comment).trim() !== '' && (
+                <Typography
+                  variant="body2"
+                  sx={{ color: '#94a3b8', fontSize: 12, mt: 0.4, wordBreak: 'break-word' }}
+                >
+                  {t.comment}
+                </Typography>
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+    ) : (
+      'No Target Set in Target Setting'
+    );
+
+    return (
+      <Tooltip
+        title={tooltipContent}
+        arrow
+        placement="left"
+        slotProps={{
+          tooltip: {
+            sx: hasTarget
+              ? {
+                  bgcolor: '#161824',
+                  border: '1px solid #2a2e43',
+                  borderRadius: 2,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                  p: 1
+                }
+              : {}
+          },
+          arrow: {
+            sx: hasTarget ? { color: '#161824' } : {}
+          }
+        }}
+      >
+        <span style={{ display: 'inline-flex' }}>
+          <Checkbox
+            checked={hasTarget}
+            disableRipple
+            readOnly
+            sx={{
+              p: 0.5,
+              cursor: 'default',
+              color: '#2a2e43',
+              '&.Mui-checked': {
+                color: anyTriggered ? '#10b981' : '#3b82f6'
+              }
+            }}
+          />
         </span>
       </Tooltip>
     );
@@ -1066,6 +1258,9 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                 </Tooltip>
                               </TableCell>
                               <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                {renderTargetCell(row)}
+                              </TableCell>
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
                                 {isManual ? (
                                   <Tooltip title="Remove manual item">
                                     <IconButton
@@ -1125,7 +1320,7 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                         })
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={14} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                          <TableCell colSpan={15} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                             No matching profit booking candidates currently.
                           </TableCell>
                         </TableRow>
@@ -1362,11 +1557,14 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     }}
                                   />
                                 </TableCell>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                  {renderTargetCell(row)}
+                                </TableCell>
                               </TableRow>
                             ))
                           ) : (
                             <TableRow>
-                              <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                              <TableCell colSpan={14} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                                 No matching positive movers.
                               </TableCell>
                             </TableRow>
@@ -1487,11 +1685,14 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     }}
                                   />
                                 </TableCell>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                  {renderTargetCell(row)}
+                                </TableCell>
                               </TableRow>
                             ))
                           ) : (
                             <TableRow>
-                              <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                              <TableCell colSpan={14} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                                 No matching negative movers.
                               </TableCell>
                             </TableRow>
@@ -1695,11 +1896,14 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     }}
                                   />
                                 </TableCell>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                  {renderTargetCell(row)}
+                                </TableCell>
                               </TableRow>
                             ))
                           ) : (
                             <TableRow>
-                              <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                              <TableCell colSpan={14} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                                 No matching positive dippers.
                               </TableCell>
                             </TableRow>
@@ -1820,11 +2024,14 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                     }}
                                   />
                                 </TableCell>
+                                <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                  {renderTargetCell(row)}
+                                </TableCell>
                               </TableRow>
                             ))
                           ) : (
                             <TableRow>
-                              <TableCell colSpan={13} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                              <TableCell colSpan={14} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                                 No matching negative dippers.
                               </TableCell>
                             </TableRow>
@@ -2023,12 +2230,17 @@ const Watchlist: React.FC<WatchlistProps> = ({ onViewStock, showToast }) => {
                                   />
                                 </Tooltip>
                               </TableCell>
+
+                              {/* Target checkbox */}
+                              <TableCell sx={{ borderBottom: '1px solid #2a2e43' }}>
+                                {renderTargetCell(row)}
+                              </TableCell>
                             </TableRow>
                           );
                         })
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={9} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                          <TableCell colSpan={10} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                               <Typography variant="body2" sx={{ color: '#f59e0b', fontWeight: 600 }}>
                                 No matching re-entry candidates found

@@ -487,7 +487,7 @@ const LatestNews: React.FC<LatestNewsProps> = ({ onViewStock, showToast }) => {
                             <IconButton
                               size="small"
                               component="a"
-                              href={`https://www.screener.in/company/${encodeURIComponent(st.symbol)}/`}
+                              href={`https://www.screener.in/company/${encodeURIComponent(st.symbol)}/consolidated/`}
                               target="_blank"
                               rel="noopener noreferrer"
                               sx={{ color: '#94a3b8', p: 0.4, '&:hover': { color: '#38bdf8' } }}

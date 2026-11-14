@@ -873,7 +873,8 @@ class MutualFundEngine:
                 "change_3m": change_3m,
                 "change_3m_pct": change_3m_pct,
                 "trend_3m": trend_3m,
-                "portfolio_signal": portfolio_signal
+                "portfolio_signal": portfolio_signal,
+                "month_values": {m: round(float(get_hist(m)), 2) for m in months}
             })
 
         # Build index mapping multiple identifier variations to fund list
