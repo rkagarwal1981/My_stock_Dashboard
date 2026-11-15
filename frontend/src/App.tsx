@@ -28,6 +28,7 @@ const Settings = lazy(() => import('./pages/Settings'));
 const StockSummary = lazy(() => import('./pages/StockSummary'));
 const OrderBook = lazy(() => import('./pages/OrderBook'));
 const MutualFunds = lazy(() => import('./pages/MutualFunds'));
+const MutualFundsV1 = lazy(() => import('./pages/MutualFundsV1'));
 const TargetSetting = lazy(() => import('./pages/TargetSetting'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const HoldingAnalysis = lazy(() => import('./pages/HoldingAnalysis'));
@@ -514,6 +515,8 @@ function App() {
               return <ExpensesInterest />;
             case 'mutual-funds':
               return <MutualFunds onViewStock={handleViewStock} />;
+            case 'mutual-funds-v1':
+              return <MutualFundsV1 onViewStock={handleViewStock} />;
             case 'holding-analysis':
               return <HoldingAnalysis />;
             case 'logs':
@@ -564,6 +567,8 @@ function App() {
                 ? 'F&O TRADING (NIFTY - ZERODHA)'
                 : activeTab === 'latest-news'
                 ? 'LATEST NEWS (LIVE HOLDINGS)'
+                : activeTab === 'mutual-funds-v1'
+                ? 'MUTUAL FUNDS (V1)'
                 : activeTab.toUpperCase()}
             </Typography>
 
@@ -636,6 +641,7 @@ function App() {
               { id: 'analytics', text: 'Analytics', icon: <BarChartIcon /> },
               { id: 'expenses', text: 'Expenses & Interest', icon: <AccountBalanceIcon /> },
               { id: 'mutual-funds', text: 'Mutual Funds', icon: <AssessmentIcon /> },
+              { id: 'mutual-funds-v1', text: 'Mutual Funds (V1)', icon: <AssessmentIcon /> },
               { id: 'logs', text: 'Audit Logs', icon: <ReceiptIcon /> },
               { id: 'settings', text: 'Settings', icon: <SettingsIcon /> },
             ].map((item) => (

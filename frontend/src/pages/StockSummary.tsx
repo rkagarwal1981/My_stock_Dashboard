@@ -22,6 +22,9 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import NoteAltIcon from '@mui/icons-material/NoteAlt';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
+import CameraAltIcon from '@mui/icons-material/CameraAlt';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, CartesianGrid, LabelList, Cell, ReferenceLine
 } from 'recharts';
@@ -110,6 +113,116 @@ const StockSummary: React.FC<StockSummaryProps> = ({
   const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
   const [pdfViewerUrl, setPdfViewerUrl] = useState('');
   const [pdfViewerFilename, setPdfViewerFilename] = useState('');
+
+  // ─── Screener.in Snapshot Modal state ────────────────────────────────────────
+  const [screenerModalOpen, setScreenerModalOpen] = useState<boolean>(false);
+  const [screenerLoading, setScreenerLoading] = useState<boolean>(false);
+  const [screenerError, setScreenerError] = useState<string | null>(null);
+  const [screenerData, setScreenerData] = useState<{
+    symbol: string;
+    screener_url: string;
+    chart_url: string | null;
+    peers_url: string | null;
+    captured_at: string | null;
+    age_days: number | null;
+  } | null>(null);
+
+  const cleanScreenerSymbol = (rawScript: string): string => {
+    let sym = String(rawScript || '').split('|')[0].trim().toUpperCase();
+    if (sym.endsWith('-EQ')) {
+      sym = sym.slice(0, -3).trim();
+    }
+    return sym;
+  };
+
+  const handleOpenScreenerWeb = (rawScript: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return;
+    window.open(
+      `https://www.screener.in/company/${encodeURIComponent(sym)}/consolidated/`,
+      '_blank',
+      'noopener,noreferrer'
+    );
+  };
+
+  const handleOpenScreenerSnapshot = async (
+    rawScript: string,
+    force: boolean = false,
+    e?: React.MouseEvent
+  ) => {
+    if (e) e.stopPropagation();
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return;
+
+    setScreenerModalOpen(true);
+    setScreenerLoading(true);
+    setScreenerError(null);
+    if (!force || !screenerData || screenerData.symbol !== sym) {
+      setScreenerData({
+        symbol: sym,
+        screener_url: `https://www.screener.in/company/${sym}/consolidated/`,
+        chart_url: null,
+        peers_url: null,
+        captured_at: null,
+        age_days: null
+      });
+    }
+
+    try {
+      const res = await axios.get(
+        `/api/watchlist/screener/${encodeURIComponent(sym)}?force=${force}`
+      );
+      setScreenerData(res.data);
+    } catch (err: any) {
+      const detail =
+        err?.response?.data?.detail || `Failed to load Screener.in snapshot for ${sym}.`;
+      setScreenerError(detail);
+    } finally {
+      setScreenerLoading(false);
+    }
+  };
+
+  const renderScreenerActions = (rawScript: string) => {
+    const sym = cleanScreenerSymbol(rawScript);
+    if (!sym) return null;
+    return (
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.6 }}>
+        <Tooltip title={`View ${sym} Screener Snapshot (PE/EPS Chart & Peers — Cached 90d)`} arrow>
+          <IconButton
+            size="small"
+            onClick={e => handleOpenScreenerSnapshot(sym, false, e)}
+            sx={{
+              p: 0.5,
+              color: '#38bdf8',
+              bgcolor: 'rgba(56,189,248,0.1)',
+              border: '1px solid rgba(56,189,248,0.25)',
+              borderRadius: 1.25,
+              '&:hover': { bgcolor: 'rgba(56,189,248,0.22)', color: '#7dd3fc' }
+            }}
+          >
+            <CameraAltIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={`Open ${sym} on Screener.in in new tab`} arrow>
+          <IconButton
+            size="small"
+            onClick={e => handleOpenScreenerWeb(sym, e)}
+            sx={{
+              p: 0.5,
+              color: '#a78bfa',
+              bgcolor: 'rgba(167,139,250,0.1)',
+              border: '1px solid rgba(167,139,250,0.25)',
+              borderRadius: 1.25,
+              '&:hover': { bgcolor: 'rgba(167,139,250,0.22)', color: '#c4b5fd' }
+            }}
+          >
+            <OpenInNewIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+    );
+  };
 
   const loadStockData = async () => {
     try {
@@ -810,7 +923,10 @@ const StockSummary: React.FC<StockSummaryProps> = ({
         )}
       </Box>
 
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.5 }}>{scrip}</Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 0.5 }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>{scrip}</Typography>
+        {renderScreenerActions(scrip)}
+      </Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>Stock Summary & Settlement History</Typography>
 
       {/* Summary Cards */}
@@ -2063,6 +2179,186 @@ const StockSummary: React.FC<StockSummaryProps> = ({
           </Box>
         </Box>
       )}
+
+      {/* Screener.in Quick-View Snapshot Modal */}
+      <Dialog
+        open={screenerModalOpen}
+        onClose={() => setScreenerModalOpen(false)}
+        maxWidth="xl"
+        fullWidth
+        slotProps={{
+          paper: {
+            sx: {
+              bgcolor: '#0f172a',
+              border: '1px solid #2a2e43',
+              borderRadius: 2,
+              backgroundImage: 'none'
+            }
+          }
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 1.5,
+            borderBottom: '1px solid #2a2e43',
+            py: 1.5,
+            px: 2.5
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+            <Typography variant="h6" sx={{ fontWeight: 800, color: '#f8fafc' }}>
+              Screener.in Valuation — {screenerData?.symbol || ''}
+            </Typography>
+            {screenerData?.captured_at && (
+              <Chip
+                label={`Snapshot: ${screenerData.captured_at} (${screenerData.age_days ?? 0}d old • Auto-cached 90d)`}
+                size="small"
+                sx={{
+                  bgcolor: 'rgba(16,185,129,0.14)',
+                  color: '#34d399',
+                  fontWeight: 600,
+                  fontSize: 11
+                }}
+              />
+            )}
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            {screenerData?.symbol && (
+              <>
+                <Tooltip title="Re-capture fresh screenshots from Screener.in now" arrow>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={screenerLoading ? <CircularProgress size={14} color="inherit" /> : <RefreshIcon />}
+                      onClick={() => handleOpenScreenerSnapshot(screenerData.symbol, true)}
+                      disabled={screenerLoading}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderRadius: 1.5,
+                        borderColor: 'rgba(56,189,248,0.4)',
+                        color: '#38bdf8'
+                      }}
+                    >
+                      Refresh Snapshot
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Button
+                  variant="contained"
+                  size="small"
+                  endIcon={<OpenInNewIcon sx={{ fontSize: 15 }} />}
+                  onClick={() => handleOpenScreenerWeb(screenerData.symbol)}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    borderRadius: 1.5,
+                    bgcolor: '#2962ff',
+                    '&:hover': { bgcolor: '#1e4bd8' }
+                  }}
+                >
+                  Open on Screener.in
+                </Button>
+              </>
+            )}
+            <IconButton onClick={() => setScreenerModalOpen(false)} size="small" sx={{ color: 'text.secondary' }}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 2.5 }}>
+          {screenerLoading ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', py: 8, gap: 2 }}>
+              <CircularProgress size={38} />
+              <Typography variant="body2" color="text.secondary">
+                Capturing Quarterly EPS / PE Ratio Chart & Peer Comparison from Screener.in for{' '}
+                <strong>{screenerData?.symbol}</strong>...
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Once saved, this snapshot will load instantly for the next 90 days.
+              </Typography>
+            </Box>
+          ) : screenerError ? (
+            <Box sx={{ py: 6, textAlign: 'center' }}>
+              <Typography variant="body1" sx={{ color: '#ef4444', fontWeight: 600, mb: 1 }}>
+                {screenerError}
+              </Typography>
+              {screenerData?.symbol && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  endIcon={<OpenInNewIcon />}
+                  onClick={() => handleOpenScreenerWeb(screenerData.symbol)}
+                  sx={{ mt: 1, textTransform: 'none' }}
+                >
+                  Open {screenerData.symbol} directly on Screener.in
+                </Button>
+              )}
+            </Box>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {screenerData?.chart_url && (
+                <Box>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ fontWeight: 700, color: '#93c5fd', mb: 1, textTransform: 'uppercase', letterSpacing: 0.6 }}
+                  >
+                    1. Quarterly TTM EPS Trend & P/E Ratio (3Yr)
+                  </Typography>
+                  <Box
+                    sx={{
+                      border: '1px solid #2a2e43',
+                      borderRadius: 2,
+                      overflow: 'hidden',
+                      bgcolor: '#ffffff',
+                      p: 1
+                    }}
+                  >
+                    <img
+                      src={screenerData.chart_url}
+                      alt={`${screenerData.symbol} PE & EPS Chart`}
+                      style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 4 }}
+                    />
+                  </Box>
+                </Box>
+              )}
+
+              {screenerData?.peers_url && (
+                <Box>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{ fontWeight: 700, color: '#93c5fd', mb: 1, textTransform: 'uppercase', letterSpacing: 0.6 }}
+                  >
+                    2. Peer Comparison
+                  </Typography>
+                  <Box
+                    sx={{
+                      border: '1px solid #2a2e43',
+                      borderRadius: 2,
+                      overflow: 'hidden',
+                      bgcolor: '#ffffff',
+                      p: 1
+                    }}
+                  >
+                    <img
+                      src={screenerData.peers_url}
+                      alt={`${screenerData.symbol} Peer Comparison`}
+                      style={{ width: '100%', height: 'auto', display: 'block', borderRadius: 4 }}
+                    />
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 };
